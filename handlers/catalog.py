@@ -21,7 +21,7 @@ from models import User
 from services.order_service import OrderService, STATUS_COMPLETED, STATUS_PAID
 from services.product_service import ProductService
 from services.user_service import UserService
-from utils import format_price, format_product_card, safe_edit_or_send
+from utils import format_price, format_product_card, get_product_price, safe_edit_or_send
 
 logger = logging.getLogger(__name__)
 router = Router(name="catalog")
@@ -154,10 +154,11 @@ async def cb_buy_balance(callback: CallbackQuery, db_user: User):
         return
 
     user = await UserService.get_by_telegram_id(db_user.telegram_id)
-    if user.balance < product.price:
+    price = get_product_price(product)
+    if user.balance < price:
         text = (
             "❌ <b>Недостаточно средств</b>\n\n"
-            f"Стоимость: {format_price(product.price)}\n"
+            f"Стоимость: {format_price(price)}\n"
             f"Ваш баланс: {format_price(user.balance)}\n\n"
             "Пополните баланс для покупки."
         )
@@ -167,7 +168,7 @@ async def cb_buy_balance(callback: CallbackQuery, db_user: User):
         await callback.answer()
         return
 
-    new_balance = await UserService.adjust_balance(user.id, -product.price)
+    new_balance = await UserService.adjust_balance(user.id, -price)
     if new_balance is None:
         await callback.answer("Ошибка списания", show_alert=True)
         return
@@ -176,7 +177,7 @@ async def cb_buy_balance(callback: CallbackQuery, db_user: User):
     order = await OrderService.create_order(
         user_id=user.id,
         product_id=product_id,
-        price=product.price,
+        price=price,
         payment_method="balance",
         status=STATUS_PAID,
     )
@@ -186,8 +187,8 @@ async def cb_buy_balance(callback: CallbackQuery, db_user: User):
         order_id=order.id,
         provider="balance",
         provider_payment_id=payment_id,
-        amount=product.price,
-        currency="BALANCE",
+        amount=price,
+        currency="RUB",
         status="paid",
     )
     await OrderService.deliver_content(callback.bot, user.telegram_id, order.id)
@@ -195,7 +196,7 @@ async def cb_buy_balance(callback: CallbackQuery, db_user: User):
     confirm_text = (
         "✅ <b>Покупка оформлена!</b>\n\n"
         f"🛍 {product.title}\n"
-        f"💰 Списано: {format_price(product.price)}\n"
+        f"💰 Списано: {format_price(price)}\n"
         f"💳 Остаток: {format_price(new_balance)}"
     )
     await safe_edit_or_send(callback, confirm_text, reply_markup=back_to_menu_kb())
@@ -235,7 +236,7 @@ async def cb_cart(callback: CallbackQuery, db_user: User):
     else:
         product_ids = [i["product_id"] for i in items]
         lines = "\n".join(
-            f"• {i['title']} × {i['quantity']} — {int(i['price'] * i['quantity'])}"
+            f"• {i['title']} × {i['quantity']} — {format_price(i['price'] * i['quantity'])}"
             for i in items
         )
         text = format_cart_summary(count, total) + f"\n\n{lines}"

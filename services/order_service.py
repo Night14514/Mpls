@@ -67,7 +67,13 @@ class OrderService(OrderEngine):
         header = f"📦 <b>{product.title}</b>\n\nВаш цифровой товар:\n\n"
 
         try:
-            if ctype == "link":
+            if ctype == "photo":
+                await bot.send_photo(
+                    telegram_id,
+                    data,
+                    caption=f"📦 {product.title}\n\nВаш цифровой товар",
+                )
+            elif ctype == "link":
                 await bot.send_message(
                     telegram_id,
                     f'{header}🔗 <a href="{data}">Перейти по ссылке</a>',
@@ -80,6 +86,8 @@ class OrderService(OrderEngine):
                         f'{header}📎 <a href="{data}">Скачать файл</a>',
                         parse_mode="HTML",
                     )
+                elif "/" not in data and "\\" not in data:
+                    await bot.send_document(telegram_id, data, caption=product.title)
                 else:
                     await bot.send_document(telegram_id, FSInputFile(data), caption=product.title)
             elif ctype == "code":

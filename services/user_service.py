@@ -7,6 +7,7 @@ from typing import List, Optional
 
 from database import get_db, transaction
 from models import User, Stats
+from utils import format_price
 
 logger = logging.getLogger(__name__)
 
@@ -198,7 +199,7 @@ class UserService:
             f"🆔 Telegram ID: <code>{user.telegram_id}</code>\n"
             f"🔗 Username: {username}\n"
             f"📛 Имя: {user.full_name or '—'}\n"
-            f"💰 Баланс: {user.balance}\n"
+            f"💰 Баланс: {format_price(user.balance)}\n"
             f"🌍 Страна: {user.country or '—'}\n"
             f"🏙 Город: {user.city or '—'}\n"
             f"📅 Регистрация: {user.created_at}"

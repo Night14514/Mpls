@@ -191,16 +191,20 @@ class ProductService:
     @classmethod
     async def delete_product(cls, product_id: int) -> bool:
         """Безопасное удаление товара с зависимыми записями."""
-        async with get_db() as db:
-            # Удаляем зависимые записи в правильном порядке
-            await db.execute("DELETE FROM order_items WHERE product_id = ?", (product_id,))
-            await db.execute("DELETE FROM cart WHERE product_id = ?", (product_id,))
-            await db.execute("DELETE FROM favorites WHERE product_id = ?", (product_id,))
-            # Обновляем orders, устанавливая product_id в NULL вместо удаления
-            await db.execute("UPDATE orders SET product_id = NULL WHERE product_id = ?", (product_id,))
-            # Теперь удаляем сам товар
-            cursor = await db.execute("DELETE FROM products WHERE id = ?", (product_id,))
-            return cursor.rowcount > 0
+        try:
+            async with get_db() as db:
+                await db.execute("DELETE FROM order_items WHERE product_id = ?", (product_id,))
+                await db.execute("DELETE FROM cart WHERE product_id = ?", (product_id,))
+                await db.execute("DELETE FROM favorites WHERE product_id = ?", (product_id,))
+                await db.execute(
+                    "UPDATE orders SET product_id = NULL WHERE product_id = ?",
+                    (product_id,),
+                )
+                cursor = await db.execute("DELETE FROM products WHERE id = ?", (product_id,))
+                return cursor.rowcount > 0
+        except Exception as exc:
+            logger.exception("Ошибка удаления товара %s: %s", product_id, exc)
+            return False
 
     @classmethod
     async def get_popular_products(cls, limit: int = 5) -> List[dict]:

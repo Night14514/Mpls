@@ -115,7 +115,7 @@ class PromoService:
                 (promo.amount, user_id),
             )
 
-        return True, f"Начислено {promo.amount}", promo.amount
+        return True, f"Начислено {promo.amount:g} ₽", promo.amount
 
     @staticmethod
     def generate_code(length: int = 8) -> str:

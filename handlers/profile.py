@@ -62,7 +62,7 @@ async def cb_topup_start(callback: CallbackQuery, state: FSMContext):
     await state.set_state(TopUpStates.amount)
     await callback.message.edit_text(
         "💳 <b>Пополнение баланса</b>\n\n"
-        "Введите сумму пополнения (число):",
+        "Введите сумму пополнения в <b>рублях</b> (число):",
         reply_markup=back_to_menu_kb(),
         parse_mode="HTML",
     )

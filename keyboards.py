@@ -87,11 +87,10 @@ def back_to_menu_kb() -> InlineKeyboardMarkup:
  
  
 def currency_selection_kb() -> InlineKeyboardMarkup:
-    """Выбор валюты для пополнения баланса."""
+    """Подтверждение валюты пополнения (только рубли)."""
     builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(text="🇺🇸 USD", callback_data="topup:currency:USD"),
-        InlineKeyboardButton(text="🇷🇺 RUB", callback_data="topup:currency:RUB"),
+        InlineKeyboardButton(text="🇷🇺 Пополнить в рублях", callback_data="topup:currency:RUB"),
     )
     builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:profile"))
     return builder.as_markup()
@@ -157,9 +156,10 @@ def products_kb(
     chunk = products[start : start + per_page] 
  
     for p in chunk: 
+        price = p.price_rub if p.price_rub is not None else p.price
         builder.row( 
             InlineKeyboardButton( 
-                text=f"🛍 {p.title} — {int(p.price)}", 
+                text=f"🛍 {p.title} — {int(price)} ₽", 
                 callback_data=f"product:{p.id}", 
             ) 
         ) 
@@ -329,10 +329,9 @@ def admin_panel_kb() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="💼 Кошельки", callback_data="admin:wallets"), 
     ) 
     builder.row( 
-        InlineKeyboardButton(text="⭐ Stars", callback_data="admin:stars"), 
         InlineKeyboardButton(text="💎 Crypto", callback_data="admin:crypto"), 
-    ) 
-    builder.row(InlineKeyboardButton(text="⚙️ Настройки", callback_data="admin:settings")) 
+        InlineKeyboardButton(text="⚙️ Настройки", callback_data="admin:settings"), 
+    )  
     builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:main")) 
     return builder.as_markup() 
  
@@ -366,9 +365,10 @@ def admin_products_kb(products: List[Product]) -> InlineKeyboardMarkup:
     builder.row(InlineKeyboardButton(text="➕ Добавить товар", callback_data="admin:product_add")) 
     for p in products[:20]: 
         status = "✅" if p.is_active else "❌" 
+        price = p.price_rub if p.price_rub is not None else p.price
         builder.row( 
             InlineKeyboardButton( 
-                text=f"{status} {p.title}", 
+                text=f"{status} {p.title} — {int(price)} ₽", 
                 callback_data=f"admin:product:{p.id}", 
             ) 
         ) 

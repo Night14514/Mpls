@@ -31,10 +31,17 @@ def escape(text: Optional[str]) -> str:
 
 
 def format_price(price: float) -> str:
-    """Форматирование цены (баланс)."""
+    """Форматирование суммы в рублях."""
     if price == int(price):
-        return f"{int(price)}"
-    return f"{price:.2f}"
+        return f"{int(price)} ₽"
+    return f"{price:.2f} ₽"
+
+
+def get_product_price(product: Product) -> float:
+    """Цена товара в рублях."""
+    if product.price_rub is not None:
+        return product.price_rub
+    return product.price
 
 
 def format_price_crypto(price: float, asset: str = "USDT") -> str:
@@ -42,29 +49,11 @@ def format_price_crypto(price: float, asset: str = "USDT") -> str:
     return f"{price:.2f} {asset}"
 
 
-def format_price_multicurrency(price_usd: Optional[float], price_rub: Optional[float]) -> str:
-    """Форматирование цены в нескольких валютах."""
-    lines = ["💰 Цена:"]
-    if price_usd is not None:
-        lines.append(f"  USD: ${format_price(price_usd)}")
-    if price_rub is not None:
-        lines.append(f"  RUB: ₽{format_price(price_rub)}")
-    return "\n".join(lines)
-
-
 def format_product_card(product: Product, category_name: Optional[str] = None) -> str:
     """Карточка товара для маркета."""
-    # Try to use multicurrency formatting if available
-    price_usd = getattr(product, "price_usd", None)
-    price_rub = getattr(product, "price_rub", None)
-    
-    if price_usd is not None or price_rub is not None:
-        price_line = format_price_multicurrency(price_usd, price_rub)
-    else:
-        price_line = f"� Цена: {format_price(product.price)}"
-    
+    price_line = f"💰 Цена: {format_price(get_product_price(product))}"
     return (
-        f"�🛍 <b>{escape(product.title)}</b>\n\n"
+        f"🛍 <b>{escape(product.title)}</b>\n\n"
         f"📄 {escape(product.description or 'Описание отсутствует')}\n\n"
         f"{price_line}"
     )
@@ -124,6 +113,21 @@ def validate_tx_hash(text: str) -> bool:
     if len(text) < 8:
         return False
     return bool(re.match(r"^[a-zA-Z0-9_\-]+$", text))
+
+
+def encode_content_data(content_type: str, data: str) -> str:
+    """Сериализация контента товара для хранения в БД."""
+    if not data:
+        return ""
+    type_map = {
+        "photo": "photo",
+        "document": "file",
+        "text": "text",
+        "link": "link",
+        "code": "code",
+    }
+    ctype = type_map.get(content_type, "text")
+    return f"type:{ctype}|data:{data}"
 
 
 def parse_content_data(content: str) -> dict:
