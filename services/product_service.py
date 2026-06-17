@@ -11,6 +11,21 @@ from models import Category, Product
 
 logger = logging.getLogger(__name__)
 
+_PRODUCT_DEPENDENCY_QUERIES = (
+    ("order_items", "SELECT id, order_id, quantity FROM order_items WHERE product_id = ?"),
+    ("cart", "SELECT id, user_id, quantity FROM cart WHERE product_id = ?"),
+    ("favorites", "SELECT id, user_id FROM favorites WHERE product_id = ?"),
+    ("orders", "SELECT id, user_id, status FROM orders WHERE product_id = ?"),
+)
+
+_PRODUCT_DELETE_STEPS = (
+    ("DELETE FROM order_items WHERE product_id = ?", "order_items.product_id -> products.id"),
+    ("DELETE FROM cart WHERE product_id = ?", "cart.product_id -> products.id"),
+    ("DELETE FROM favorites WHERE product_id = ?", "favorites.product_id -> products.id"),
+    ("UPDATE orders SET product_id = NULL WHERE product_id = ?", "orders.product_id -> products.id"),
+    ("DELETE FROM products WHERE id = ?", "products.id"),
+)
+
 
 class ProductService:
     """Управление каталогом."""
@@ -189,21 +204,49 @@ class ProductService:
         return await cls.get_product(product_id)
 
     @classmethod
+    async def _log_product_dependencies(cls, db, product_id: int) -> None:
+        for table, query in _PRODUCT_DEPENDENCY_QUERIES:
+            cursor = await db.execute(query, (product_id,))
+            rows = [dict(row) for row in await cursor.fetchall()]
+            logger.info(
+                "delete_product(%s): related rows in %s: %s",
+                product_id,
+                table,
+                rows,
+            )
+
+    @classmethod
     async def delete_product(cls, product_id: int) -> bool:
         """Безопасное удаление товара с зависимыми записями."""
         try:
             async with get_db() as db:
-                await db.execute("DELETE FROM order_items WHERE product_id = ?", (product_id,))
-                await db.execute("DELETE FROM cart WHERE product_id = ?", (product_id,))
-                await db.execute("DELETE FROM favorites WHERE product_id = ?", (product_id,))
-                await db.execute(
-                    "UPDATE orders SET product_id = NULL WHERE product_id = ?",
-                    (product_id,),
-                )
-                cursor = await db.execute("DELETE FROM products WHERE id = ?", (product_id,))
-                return cursor.rowcount > 0
+                await cls._log_product_dependencies(db, product_id)
+                for sql, fk_label in _PRODUCT_DELETE_STEPS:
+                    logger.info(
+                        "delete_product(%s): executing %s (%s)",
+                        product_id,
+                        sql,
+                        fk_label,
+                    )
+                    cursor = await db.execute(
+                        sql,
+                        (product_id,),
+                    )
+                    logger.info(
+                        "delete_product(%s): %s affected %s row(s)",
+                        product_id,
+                        sql,
+                        cursor.rowcount,
+                    )
+                    if sql.startswith("DELETE FROM products") and cursor.rowcount == 0:
+                        return False
+                return True
         except Exception as exc:
-            logger.exception("Ошибка удаления товара %s: %s", product_id, exc)
+            logger.exception(
+                "delete_product(%s): failed on SQL cleanup/delete: %s",
+                product_id,
+                exc,
+            )
             return False
 
     @classmethod

@@ -67,6 +67,8 @@ async def init_db() -> None:
             await _create_tables(db)
             await _migrate_columns(db)
             await db.commit()
+            await _migrate_product_foreign_keys(db)
+            await db.commit()
         logger.info("SQLite database initialized: %s", _db_path)
         return
 
@@ -140,7 +142,7 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
             confirmed_at TEXT,
             created_at TEXT DEFAULT (datetime('now')),
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-            FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+            FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL
         );
 
         CREATE TABLE IF NOT EXISTS order_items (
@@ -292,6 +294,178 @@ async def _safe_execute(db: aiosqlite.Connection, sql: str) -> None:
         await db.execute(sql)
     except Exception as exc:
         logger.debug("Ignored migration statement %r: %s", sql, exc)
+
+
+_PRODUCT_FK_EXPECTATIONS = {
+    "cart": [
+        ("product_id", "products", "CASCADE"),
+        ("user_id", "users", "CASCADE"),
+    ],
+    "favorites": [
+        ("product_id", "products", "CASCADE"),
+        ("user_id", "users", "CASCADE"),
+    ],
+    "orders": [
+        ("product_id", "products", "SET NULL"),
+        ("user_id", "users", "CASCADE"),
+    ],
+    "order_items": [
+        ("product_id", "products", "CASCADE"),
+        ("order_id", "orders", "CASCADE"),
+    ],
+}
+
+_PRODUCT_FK_TABLE_DEFINITIONS = {
+    "orders": """
+        CREATE TABLE {table} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            product_id INTEGER,
+            price REAL NOT NULL,
+            payment_method TEXT,
+            payment_id TEXT,
+            status TEXT DEFAULT 'PENDING',
+            confirmed_by INTEGER,
+            confirmed_at TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL
+        )
+    """,
+    "order_items": """
+        CREATE TABLE {table} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL,
+            product_id INTEGER NOT NULL,
+            price REAL NOT NULL,
+            quantity INTEGER DEFAULT 1,
+            FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
+            FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+        )
+    """,
+    "cart": """
+        CREATE TABLE {table} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            product_id INTEGER NOT NULL,
+            quantity INTEGER DEFAULT 1,
+            UNIQUE(user_id, product_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+        )
+    """,
+    "favorites": """
+        CREATE TABLE {table} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            product_id INTEGER NOT NULL,
+            UNIQUE(user_id, product_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+        )
+    """,
+}
+
+
+async def _table_exists(db: aiosqlite.Connection, table_name: str) -> bool:
+    cursor = await db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    )
+    return await cursor.fetchone() is not None
+
+
+async def _get_table_columns(db: aiosqlite.Connection, table_name: str) -> list[str]:
+    cursor = await db.execute(f"PRAGMA table_info({table_name})")
+    rows = await cursor.fetchall()
+    return [row["name"] for row in rows]
+
+
+async def _get_foreign_key_rules(
+    db: aiosqlite.Connection, table_name: str
+) -> dict[tuple[str, str], str]:
+    cursor = await db.execute(f"PRAGMA foreign_key_list({table_name})")
+    rows = await cursor.fetchall()
+    return {(row["from"], row["table"]): row["on_delete"].upper() for row in rows}
+
+
+def _normalize_on_delete(rule: str) -> str:
+    normalized = rule.strip().upper()
+    if normalized in {"", "NO ACTION", "RESTRICT"}:
+        return "NO ACTION"
+    return normalized
+
+
+async def _product_foreign_keys_need_migration(db: aiosqlite.Connection) -> bool:
+    for table_name, expected_rules in _PRODUCT_FK_EXPECTATIONS.items():
+        if not await _table_exists(db, table_name):
+            continue
+        actual_rules = await _get_foreign_key_rules(db, table_name)
+        for column, ref_table, expected_on_delete in expected_rules:
+            actual = _normalize_on_delete(actual_rules.get((column, ref_table), "NO ACTION"))
+            expected = _normalize_on_delete(expected_on_delete)
+            if actual != expected:
+                logger.info(
+                    "Product FK migration required for %s.%s -> %s (%s != %s)",
+                    table_name,
+                    column,
+                    ref_table,
+                    actual,
+                    expected,
+                )
+                return True
+    return False
+
+
+async def _copy_table_rows(
+    db: aiosqlite.Connection,
+    source_table: str,
+    target_table: str,
+    columns: list[str],
+) -> None:
+    if not columns:
+        return
+    column_list = ", ".join(columns)
+    await db.execute(
+        f"INSERT INTO {target_table} ({column_list}) "
+        f"SELECT {column_list} FROM {source_table}"
+    )
+
+
+async def _rebuild_product_fk_table(db: aiosqlite.Connection, table_name: str) -> None:
+    old_table = f"{table_name}_fk_old"
+    columns = await _get_table_columns(db, table_name)
+    if not columns:
+        return
+
+    await db.execute(f"ALTER TABLE {table_name} RENAME TO {old_table}")
+    await db.execute(_PRODUCT_FK_TABLE_DEFINITIONS[table_name].format(table=table_name))
+    await _copy_table_rows(db, old_table, table_name, columns)
+    await db.execute(f"DROP TABLE {old_table}")
+
+
+async def _migrate_product_foreign_keys(db: aiosqlite.Connection) -> None:
+    """Rebuild product-related tables when legacy FK rules differ from code."""
+    if not await _product_foreign_keys_need_migration(db):
+        return
+
+    logger.info("Running product foreign key migration")
+    await db.execute("PRAGMA foreign_keys = OFF")
+    try:
+        if await _table_exists(db, "orders"):
+            await _rebuild_product_fk_table(db, "orders")
+            await _safe_execute(db, "CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id)")
+            await _safe_execute(db, "CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)")
+        if await _table_exists(db, "order_items"):
+            await _rebuild_product_fk_table(db, "order_items")
+        if await _table_exists(db, "cart"):
+            await _rebuild_product_fk_table(db, "cart")
+        if await _table_exists(db, "favorites"):
+            await _rebuild_product_fk_table(db, "favorites")
+    finally:
+        await db.execute("PRAGMA foreign_keys = ON")
+
+    logger.info("Product foreign key migration completed")
 
 
 @asynccontextmanager

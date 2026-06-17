@@ -398,9 +398,11 @@ async def cb_admin_product_delete(callback: CallbackQuery):
 
 @router.callback_query(F.data.regexp(r"^admin:product_del_yes:\d+$"))
 async def cb_admin_product_delete_yes(callback: CallbackQuery):
-    product_id = int(callback.data.split(":")[3])
+    product_id = int(callback.data.split(":")[2])
     success = await ProductService.delete_product(product_id)
     if success:
+        print("SUCCESS:", success)
+
         products = await ProductService.get_all_products()
         await callback.message.edit_text(
             "✅ Товар удалён",
@@ -477,7 +479,7 @@ async def cb_admin_cat_delete(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("admin:cat_del_yes:"))
 async def cb_admin_cat_delete_yes(callback: CallbackQuery):
-    cat_id = int(callback.data.split(":")[3])
+    cat_id = int(callback.data.split(":")[2])
     success = await ProductService.delete_category(cat_id)
     if success:
         await callback.message.edit_text(
@@ -822,7 +824,8 @@ async def cb_admin_promo_delete(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("admin:promo_del_yes:"))
 async def cb_admin_promo_delete_yes(callback: CallbackQuery):
-    promo_id = int(callback.data.split(":")[3])
+    promo_id = int(callback.data.split(":")[2])
+
     success = await PromoService.delete(promo_id)
     if success:
         await callback.message.edit_text(
