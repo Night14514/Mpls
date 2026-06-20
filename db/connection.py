@@ -188,7 +188,6 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
             FOREIGN KEY (user_id) REFERENCES users(id),
             FOREIGN KEY (order_id) REFERENCES orders(id)
         );
-
         CREATE TABLE IF NOT EXISTS favorites (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
@@ -240,12 +239,47 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
             FOREIGN KEY (admin_user_id) REFERENCES users(id)
         );
 
+        CREATE TABLE IF NOT EXISTS referrals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            referrer_user_id INTEGER NOT NULL,
+            referred_user_id INTEGER NOT NULL UNIQUE,
+            source_payload TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT DEFAULT (datetime('now')),
+            confirmed_at TEXT,
+            FOREIGN KEY (referrer_user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (referred_user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS referral_rewards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            referrer_user_id INTEGER NOT NULL,
+            milestone INTEGER NOT NULL,
+            promo_code TEXT NOT NULL,
+            amount REAL NOT NULL,
+            referral_count_at_grant INTEGER NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(referrer_user_id, milestone),
+            FOREIGN KEY (referrer_user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS referral_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            enabled INTEGER NOT NULL DEFAULT 1,
+            threshold INTEGER NOT NULL DEFAULT 5,
+            reward_amount REAL NOT NULL DEFAULT 500,
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+
         CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id);
         CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id);
         CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
         CREATE INDEX IF NOT EXISTS idx_payments_provider_id ON payments(provider_payment_id);
         CREATE INDEX IF NOT EXISTS idx_crypto_invoices_invoice_id ON crypto_invoices(invoice_id);
         CREATE INDEX IF NOT EXISTS idx_order_admin_actions_order_id ON order_admin_actions(order_id);
+        CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrer_user_id);
+        CREATE INDEX IF NOT EXISTS idx_referrals_status ON referrals(status);
+        CREATE INDEX IF NOT EXISTS idx_referral_rewards_referrer ON referral_rewards(referrer_user_id);
         """
     )
     await _migrate_columns(db)
@@ -269,9 +303,21 @@ async def _migrate_columns(db: aiosqlite.Connection) -> None:
         "ALTER TABLE balance_topups ADD COLUMN admin_message_id INTEGER",
         "ALTER TABLE products ADD COLUMN price_usd REAL",
         "ALTER TABLE products ADD COLUMN price_rub REAL",
+        "ALTER TABLE users ADD COLUMN referral_code TEXT",
     ]
     for sql in migrations:
         await _safe_execute(db, sql)
+
+    await _safe_execute(
+        db,
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_referral_code "
+        "ON users(referral_code) WHERE referral_code IS NOT NULL",
+    )
+    await _safe_execute(
+        db,
+        "INSERT OR IGNORE INTO referral_settings (id, enabled, threshold, reward_amount) "
+        "VALUES (1, 1, 5, 500)",
+    )
 
     await db.execute(
         """
@@ -287,7 +333,6 @@ async def _migrate_columns(db: aiosqlite.Connection) -> None:
         END
         """
     )
-
 
 async def _safe_execute(db: aiosqlite.Connection, sql: str) -> None:
     try:

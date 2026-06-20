@@ -12,6 +12,7 @@ from config import get_settings
 from database import init_db
 from utils import setup_logging
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,8 +37,8 @@ async def main() -> None:
         from aiogram.fsm.storage.memory import MemoryStorage
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-        from handlers import admin, catalog, orders, payments, profile, promo, registration, start
         from middlewares import ThrottleMiddleware, UserMiddleware
+        from handlers import admin, catalog, orders, payments, profile, promo, registration, start, referral
 
         bot = Bot(
             token=settings.BOT_TOKEN,
@@ -56,6 +57,7 @@ async def main() -> None:
         dp.include_router(start.router)
         dp.include_router(promo.router)
         dp.include_router(profile.router)
+        dp.include_router(referral.router)
         dp.include_router(orders.router)
         dp.include_router(payments.router)
         dp.include_router(catalog.router)

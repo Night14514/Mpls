@@ -85,3 +85,10 @@ class AdminProductEditStates(StatesGroup):
     """Редактирование товара."""
     field = State()
     value = State()
+
+
+class AdminReferralSettingsStates(StatesGroup):
+    """Изменение настроек реферальной программы."""
+    threshold = State()
+    reward_amount = State()
+    enabled = State()

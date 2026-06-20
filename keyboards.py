@@ -39,6 +39,9 @@ def main_menu_kb(is_admin: bool = False) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="📦 Мои заказы", callback_data="menu:my_orders"), 
         InlineKeyboardButton(text="🎁 Промокоды", callback_data="menu:promo"), 
     ) 
+    builder.row(
+        InlineKeyboardButton(text="👥 Реферальная система", callback_data="ref:menu"),
+    )
      
     # Добавляем кнопку "Админ панель" для администраторов
     if is_admin:
@@ -53,7 +56,7 @@ def main_menu_kb(is_admin: bool = False) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="💬 Отзывы", url=settings.REVIEWS_CHANNEL) 
         ) 
      
-    return builder.as_markup() 
+    return builder.as_markup()
  
  
 def promo_menu_kb() -> InlineKeyboardMarkup: 
@@ -336,9 +339,12 @@ def admin_panel_kb() -> InlineKeyboardMarkup:
     builder.row( 
         InlineKeyboardButton(text="💎 Crypto", callback_data="admin:crypto"), 
         InlineKeyboardButton(text="⚙️ Настройки", callback_data="admin:settings"), 
-    )  
+    )
+    builder.row(
+        InlineKeyboardButton(text="👥 Реф система", callback_data="admin:ref:menu"),
+    )
     builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:main")) 
-    return builder.as_markup() 
+    return builder.as_markup()
  
  
 def admin_balance_kb() -> InlineKeyboardMarkup: 
@@ -442,3 +448,52 @@ def skip_kb(next_data: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup( 
         inline_keyboard=[[InlineKeyboardButton(text="⏭ Пропустить", callback_data=next_data)]] 
     )
+
+# ── Реферальная система: пользователь ───────────────────────
+
+def referral_menu_kb() -> InlineKeyboardMarkup:
+    """Раздел «Реферальная система» для пользователя."""
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🔗 Получить ссылку", callback_data="ref:link"))
+    builder.row(InlineKeyboardButton(text="📋 Показать моих рефералов", callback_data="ref:list"))
+    builder.row(InlineKeyboardButton(text="🎁 Мои награды", callback_data="ref:rewards"))
+    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu:main"))
+    return builder.as_markup()
+
+
+def referral_back_kb() -> InlineKeyboardMarkup:
+    """Назад в раздел реферальной системы."""
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="ref:menu"))
+    return builder.as_markup()
+
+
+# ── Реферальная система: админ ──────────────────────────────
+
+def admin_referral_menu_kb() -> InlineKeyboardMarkup:
+    """Меню управления реферальной системой в админке."""
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="📊 Статистика", callback_data="admin:ref:stats"))
+    builder.row(InlineKeyboardButton(text="🏆 Топ рефералов", callback_data="admin:ref:top"))
+    builder.row(InlineKeyboardButton(text="🎁 Выданные награды", callback_data="admin:ref:rewards"))
+    builder.row(InlineKeyboardButton(text="⚙ Настройки системы", callback_data="admin:ref:settings"))
+    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="admin:panel"))
+    return builder.as_markup()
+
+
+def admin_referral_back_kb() -> InlineKeyboardMarkup:
+    """Назад в меню реферальной системы (админ)."""
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="admin:ref:menu"))
+    return builder.as_markup()
+
+
+def admin_referral_settings_kb(enabled: bool) -> InlineKeyboardMarkup:
+    """Настройки реферальной программы — переключатель и изменяемые параметры."""
+    builder = InlineKeyboardBuilder()
+    toggle_text = "🔴 Выключить программу" if enabled else "🟢 Включить программу"
+    builder.row(InlineKeyboardButton(text=toggle_text, callback_data="admin:ref:toggle"))
+    builder.row(InlineKeyboardButton(text="🔢 Порог рефералов", callback_data="admin:ref:set_threshold"))
+    builder.row(InlineKeyboardButton(text="💰 Размер награды", callback_data="admin:ref:set_amount"))
+    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="admin:ref:menu"))
+    return builder.as_markup()

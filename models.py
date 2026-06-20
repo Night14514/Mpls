@@ -147,3 +147,36 @@ class Stats:
     crypto_revenue: float
     new_users_today: int
     popular_products: list
+
+
+@dataclass
+class Referral:
+    """Связь «пригласивший → приглашённый»."""
+    id: int
+    referrer_user_id: int
+    referred_user_id: int
+    source_payload: Optional[str]
+    status: str  # 'pending' | 'confirmed'
+    created_at: str = ""
+    confirmed_at: Optional[str] = None
+
+
+@dataclass
+class ReferralReward:
+    """Выданная награда за достижение порога рефералов."""
+    id: int
+    referrer_user_id: int
+    milestone: int
+    promo_code: str
+    amount: float
+    referral_count_at_grant: int
+    created_at: str = ""
+
+
+@dataclass
+class ReferralSettings:
+    """Настройки реферальной программы (singleton-строка)."""
+    enabled: bool
+    threshold: int
+    reward_amount: float
+    updated_at: str = ""

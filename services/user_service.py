@@ -3,6 +3,8 @@
 """
 
 import logging
+import secrets
+import string
 from typing import List, Optional
 
 from database import get_db, transaction
@@ -10,6 +12,9 @@ from models import User, Stats
 from utils import format_price
 
 logger = logging.getLogger(__name__)
+
+_REF_CODE_ALPHABET = string.ascii_uppercase + string.digits
+_REF_CODE_LENGTH = 8
 
 
 class UserService:
@@ -88,6 +93,64 @@ class UserService:
     async def get_by_id(cls, user_id: int) -> Optional[User]:
         async with get_db() as db:
             cursor = await db.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+            row = await cursor.fetchone()
+            return cls._row_to_user(row) if row else None
+
+    @classmethod
+    async def get_referral_code(cls, user_id: int) -> Optional[str]:
+        """Текущий реферальный код пользователя (без генерации)."""
+        async with get_db() as db:
+            cursor = await db.execute(
+                "SELECT referral_code FROM users WHERE id = ?", (user_id,)
+            )
+            row = await cursor.fetchone()
+            return row["referral_code"] if row else None
+
+    @classmethod
+    async def ensure_referral_code(cls, user_id: int) -> str:
+        """Получить реферальный код пользователя, сгенерировав его при первой необходимости.
+        Генерация лениво вынесена сюда (а не в get_or_create), чтобы не трогать
+        путь UserMiddleware, который создаёт пользователя на КАЖДОМ апдейте —
+        там код пользователю ещё не нужен.
+        """
+        existing = await cls.get_referral_code(user_id)
+        if existing:
+            return existing
+
+        async with transaction("IMMEDIATE") as db:
+            cursor = await db.execute(
+                "SELECT referral_code FROM users WHERE id = ?", (user_id,)
+            )
+            row = await cursor.fetchone()
+            if row and row["referral_code"]:
+                return row["referral_code"]
+
+            for _ in range(10):
+                candidate = "".join(
+                    secrets.choice(_REF_CODE_ALPHABET) for _ in range(_REF_CODE_LENGTH)
+                )
+                clash = await db.execute(
+                    "SELECT 1 FROM users WHERE referral_code = ?", (candidate,)
+                )
+                if await clash.fetchone():
+                    continue
+                cursor = await db.execute(
+                    "UPDATE users SET referral_code = ? WHERE id = ? AND referral_code IS NULL",
+                    (candidate, user_id),
+                )
+                if cursor.rowcount == 1:
+                    logger.info("Сгенерирован referral_code для user_id=%s", user_id)
+                    return candidate
+            raise RuntimeError("Не удалось сгенерировать уникальный referral_code")
+
+    @classmethod
+    async def get_by_referral_code(cls, code: str) -> Optional[User]:
+        if not code:
+            return None
+        async with get_db() as db:
+            cursor = await db.execute(
+                "SELECT * FROM users WHERE referral_code = ?", (code.strip().upper(),)
+            )
             row = await cursor.fetchone()
             return cls._row_to_user(row) if row else None
 

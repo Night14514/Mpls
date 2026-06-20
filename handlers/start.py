@@ -5,7 +5,7 @@
 import logging
 
 from aiogram import F, Router
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
@@ -13,6 +13,7 @@ from config import get_settings
 from handlers.registration import start_registration
 from keyboards import admin_panel_kb, main_menu_kb
 from models import User
+from services.referral_service import ReferralService
 
 logger = logging.getLogger(__name__)
 router = Router(name="start")
@@ -27,9 +28,23 @@ def _welcome_text(user: User) -> str:
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message, db_user: User, state: FSMContext):
+async def cmd_start(
+    message: Message, db_user: User, state: FSMContext, command: CommandObject
+):
     """Команда /start — регистрация или главное меню."""
     await state.clear()
+
+    referral_code = ReferralService.parse_start_payload(command.args)
+    if referral_code:
+        # Привязка реферера фиксируется сразу (как pending), но засчитывается
+        # пригласившему только после завершения регистрации — это не должно
+        # помешать обычному входу, если payload некорректный или пользователь
+        # уже зарегистрирован.
+        try:
+            await ReferralService.attribute_pending_referral(referral_code, db_user)
+        except Exception as e:
+            logger.error("Ошибка привязки реферала для %s: %s", db_user.telegram_id, e)
+
     if not db_user.is_registered:
         await start_registration(message, state)
         return
@@ -103,8 +118,6 @@ async def cmd_give_trust(message: Message, db_user: User):
             pass
     else:
         await message.answer("❌ Пользователь не найден.")
-
-
 @router.message(Command("remove_trust"))
 async def cmd_remove_trust(message: Message, db_user: User):
     """Снять VIP: /remove_trust <telegram_id>"""

@@ -20,6 +20,9 @@ from keyboards import (
     admin_product_edit_fields_kb,
     admin_products_kb,
     admin_promos_kb,
+    admin_referral_back_kb,
+    admin_referral_menu_kb,
+    admin_referral_settings_kb,
     back_kb,
     categories_kb,
     confirm_kb,
@@ -28,6 +31,7 @@ from keyboards import (
 from core.order_engine import ConfirmOutcome, STATUS_COMPLETED, STATUS_CONFIRMED
 from services.balance_service import BalanceService
 from services.promo_service import PromoService
+from services.referral_service import ReferralService
 from middlewares import AdminMiddleware
 from models import User
 from services.order_service import OrderService
@@ -41,6 +45,7 @@ from states import (
     AdminPromoStates,
     AdminUserStates,
     AdminWalletStates,
+    AdminReferralSettingsStates,
 )
 from utils import encode_content_data, escape, format_price, get_product_price, safe_edit_or_send, validate_price
 
@@ -1049,3 +1054,166 @@ async def msg_edit_value_text(message: Message, state: FSMContext):
         await state.clear()
     else:
         await message.answer("❌ Неизвестное поле")
+
+# ── Реферальная система ─────────────────────────────────────
+
+@router.callback_query(F.data == "admin:ref:menu")
+async def cb_admin_ref_menu(callback: CallbackQuery):
+    await safe_edit_or_send(
+        callback,
+        "👥 <b>Реферальная система</b>\n\nВыберите раздел:",
+        reply_markup=admin_referral_menu_kb(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:ref:stats")
+async def cb_admin_ref_stats(callback: CallbackQuery):
+    overview = await ReferralService.get_admin_overview()
+    logger.info("Админ просмотрел статистику реферальной системы: admin_id=%s", callback.from_user.id)
+    text = (
+        "📊 <b>Статистика реферальной системы</b>\n\n"
+        f"👥 Всего рефералов: {overview['total_confirmed']}\n"
+        f"🆕 За сегодня: {overview['today']}\n"
+        f"📅 За неделю: {overview['week']}\n"
+        f"🙋 Участников программы: {overview['participants']}\n"
+        f"🎁 Выдано наград: {overview['rewards_count']}\n"
+        f"🎟 Выдано промокодов: {overview['promos_count']}"
+    )
+    await safe_edit_or_send(callback, text, reply_markup=admin_referral_back_kb())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:ref:top")
+async def cb_admin_ref_top(callback: CallbackQuery):
+    top = await ReferralService.get_top_referrers(limit=10)
+    if not top:
+        text = "🏆 <b>Топ рефералов</b>\n\nПока нет данных."
+    else:
+        lines = []
+        for i, r in enumerate(top, start=1):
+            name = r["full_name"] or "—"
+            username = f"@{r['username']}" if r["username"] else "—"
+            lines.append(
+                f"{i}. {escape(name)} ({username}) — ID <code>{r['telegram_id']}</code> "
+                f"— {r['cnt']} приглашённых"
+            )
+        text = "🏆 <b>Топ рефералов</b>\n\n" + "\n".join(lines)
+    await safe_edit_or_send(callback, text, reply_markup=admin_referral_back_kb())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:ref:rewards")
+async def cb_admin_ref_rewards(callback: CallbackQuery):
+    rewards = await ReferralService.get_all_rewards(limit=30)
+    if not rewards:
+        text = "🎁 <b>Выданные награды</b>\n\nПока нет выданных наград."
+    else:
+        lines = []
+        for r in rewards:
+            name = r["full_name"] or (f"@{r['username']}" if r["username"] else f"ID {r['telegram_id']}")
+            lines.append(
+                f"🎟 <code>{r['promo_code']}</code> — {format_price(r['amount'])}\n"
+                f"   👤 {escape(name)} | 📈 {r['referral_count_at_grant']} рефералов | "
+                f"📅 {r['created_at']}"
+            )
+        text = "🎁 <b>Выданные награды</b>\n\n" + "\n\n".join(lines)
+    await safe_edit_or_send(callback, text, reply_markup=admin_referral_back_kb())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:ref:settings")
+async def cb_admin_ref_settings(callback: CallbackQuery):
+    settings = await ReferralService.get_settings()
+    text = (
+        "⚙ <b>Настройки реферальной системы</b>\n\n"
+        f"Статус: {'🟢 включена' if settings.enabled else '🔴 выключена'}\n"
+        f"Порог для награды: {settings.threshold} рефералов\n"
+        f"Размер награды: {settings.reward_amount:g} ₽\n\n"
+        "Изменения применяются сразу, без перезапуска бота."
+    )
+    await safe_edit_or_send(callback, text, reply_markup=admin_referral_settings_kb(settings.enabled))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:ref:toggle")
+async def cb_admin_ref_toggle(callback: CallbackQuery):
+    settings = await ReferralService.get_settings()
+    new_settings = await ReferralService.update_settings(enabled=not settings.enabled)
+    logger.info(
+        "Админ изменил настройки реферальной системы: admin_id=%s enabled=%s",
+        callback.from_user.id, new_settings.enabled,
+    )
+    await callback.answer(
+        "Программа включена" if new_settings.enabled else "Программа выключена"
+    )
+    text = (
+        "⚙ <b>Настройки реферальной системы</b>\n\n"
+        f"Статус: {'🟢 включена' if new_settings.enabled else '🔴 выключена'}\n"
+        f"Порог для награды: {new_settings.threshold} рефералов\n"
+        f"Размер награды: {new_settings.reward_amount:g} ₽\n\n"
+        "Изменения применяются сразу, без перезапуска бота."
+    )
+    await safe_edit_or_send(callback, text, reply_markup=admin_referral_settings_kb(new_settings.enabled))
+
+
+@router.callback_query(F.data == "admin:ref:set_threshold")
+async def cb_admin_ref_set_threshold(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminReferralSettingsStates.threshold)
+    await safe_edit_or_send(
+        callback,
+        "🔢 Введите новое количество приглашённых пользователей, "
+        "необходимое для получения награды (целое число больше 0):",
+        reply_markup=back_kb("admin:ref:settings"),
+    )
+    await callback.answer()
+
+
+@router.message(AdminReferralSettingsStates.threshold)
+async def msg_admin_ref_threshold(message: Message, state: FSMContext):
+    try:
+        threshold = int(message.text.strip())
+        if threshold <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введите целое число больше 0")
+        return
+    new_settings = await ReferralService.update_settings(threshold=threshold)
+    await state.clear()
+    logger.info(
+        "Админ изменил порог рефералов: admin_id=%s threshold=%s",
+        message.from_user.id, threshold,
+    )
+    await message.answer(
+        f"✅ Порог обновлён: {new_settings.threshold} рефералов",
+        reply_markup=admin_referral_settings_kb(new_settings.enabled),
+    )
+
+
+@router.callback_query(F.data == "admin:ref:set_amount")
+async def cb_admin_ref_set_amount(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminReferralSettingsStates.reward_amount)
+    await safe_edit_or_send(
+        callback,
+        "💰 Введите новый размер награды в рублях (число больше 0):",
+        reply_markup=back_kb("admin:ref:settings"),
+    )
+    await callback.answer()
+
+
+@router.message(AdminReferralSettingsStates.reward_amount)
+async def msg_admin_ref_amount(message: Message, state: FSMContext):
+    amount = validate_price(message.text)
+    if amount is None:
+        await message.answer("❌ Введите корректную сумму (число больше 0)")
+        return
+    new_settings = await ReferralService.update_settings(reward_amount=amount)
+    await state.clear()
+    logger.info(
+        "Админ изменил размер награды: admin_id=%s amount=%s",
+        message.from_user.id, amount,
+    )
+    await message.answer(
+        f"✅ Размер награды обновлён: {format_price(new_settings.reward_amount)}",
+        reply_markup=admin_referral_settings_kb(new_settings.enabled),
+    )
