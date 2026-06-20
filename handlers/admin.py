@@ -21,6 +21,7 @@ from keyboards import (
     admin_products_kb,
     admin_promos_kb,
     back_kb,
+    categories_kb,
     confirm_kb,
     skip_kb,
 )
@@ -68,6 +69,8 @@ def _draft_to_product_kwargs(draft: dict) -> dict:
         "content_data": content_data,
         "price_usd": None,
         "price_rub": price,
+        "video": draft.get("video"),
+
     }
 
 
@@ -280,7 +283,7 @@ async def msg_admin_product_description(message: Message, state: FSMContext):
     await state.set_state(AdminProductStates.content)
     await message.answer(
         "📝 Описание сохранено.\n\n"
-        "📎 Отправьте <b>контент для выдачи</b> (текст, фото или файл).\n"
+        "📎 Отправьте <b>контент для выдачи</b> (текст, фото, видео или файл).\n"
         "Или пропустите — контент можно добавить позже.",
         reply_markup=skip_kb("admin:skip_content"),
         parse_mode="HTML",
@@ -296,12 +299,46 @@ async def msg_admin_product_price_rub(message: Message, state: FSMContext):
     price = float(message.text.replace(",", "."))
     _product_drafts[uid]["price_rub"] = price
     _product_drafts[uid]["price"] = price
-    await state.set_state(AdminProductStates.description)
+    await state.set_state(AdminProductStates.category)
+    categories = await ProductService.get_categories(include_hidden=True, trusted=True)
+    if not categories:
+        await message.answer(
+            f"💰 Цена: <b>{format_price(price)}</b>\n\n"
+            "⚠️ Категорий пока нет. Сначала создайте категорию (Админ-панель → Категории), "
+            "затем повторите добавление товара.",
+            reply_markup=admin_panel_kb(),
+            parse_mode="HTML",
+        )
+        _product_drafts.pop(uid, None)
+        await state.clear()
+        return
     await message.answer(
         f"💰 Цена: <b>{format_price(price)}</b>\n\n"
+        "📂 Выберите <b>категорию</b> товара:",
+        reply_markup=categories_kb(categories, prefix="admin:product_cat"),
+        parse_mode="HTML",
+    )
+
+@router.callback_query(AdminProductStates.category, F.data.regexp(r"^admin:product_cat:\d+$"))
+async def cb_admin_product_category(callback: CallbackQuery, state: FSMContext):
+    uid = callback.from_user.id
+    if uid not in _product_drafts:
+        await callback.answer("Данные потеряны, начните заново: /admin", show_alert=True)
+        return
+    category_id = int(callback.data.split(":")[2])
+    category = await ProductService.get_category(category_id)
+    if not category:
+        await callback.answer("Категория не найдена", show_alert=True)
+        return
+    _product_drafts[uid]["category_id"] = category_id
+    await state.set_state(AdminProductStates.description)
+    await callback.message.edit_text(
+        f"📂 Категория: <b>{escape(category.name)}</b>\n\n"
         "📝 Введите <b>описание</b> товара:",
         parse_mode="HTML",
     )
+    await callback.answer()
+
 
 
 @router.message(AdminProductStates.content, F.photo)
@@ -341,6 +378,19 @@ async def msg_admin_product_content_text(message: Message, state: FSMContext):
     _product_drafts[uid]["content_data"] = message.text
     await message.answer(
         "📎 Текст получен.\n\n"
+        "📦 Создать товар?",
+        reply_markup=confirm_kb("admin:product_create", "admin:products"),
+        parse_mode="HTML",
+    )
+    await state.set_state(AdminProductStates.confirm)
+
+@router.message(AdminProductStates.content, F.video)
+async def msg_admin_product_content_video(message: Message, state: FSMContext):
+    uid = message.from_user.id
+    _product_drafts[uid]["content_type"] = "video"
+    _product_drafts[uid]["content_data"] = message.video.file_id
+    await message.answer(
+        "📎 Видео получено.\n\n"
         "📦 Создать товар?",
         reply_markup=confirm_kb("admin:product_create", "admin:products"),
         parse_mode="HTML",
@@ -501,7 +551,10 @@ async def cb_admin_wallets(callback: CallbackQuery):
         text = "💳 Кошельков пока нет.\n\nДобавить: /add_wallet"
     else:
         lines = [f"💳 {w['network']}: <code>{escape(w['address'])}</code>" for w in wallets]
-        text = "💳 <b>Кошельки</b>\n\n" + "\n".join(lines) + "\n\nДобавить: /add_wallet"
+        text = (
+            "💳 <b>Кошельки</b>\n\n" + "\n".join(lines)
+            + "\n\nДобавить: /add_wallet\nУдалить: /delete_wallet"
+        )
     await safe_edit_or_send(callback, text, reply_markup=admin_panel_kb())
     await callback.answer()
 
@@ -531,7 +584,58 @@ async def msg_wallet_address(message: Message, state: FSMContext):
         await message.answer("❌ Ошибка")
 
 
-# ── Баланс ─────────────────────────────────────────────────
+@router.message(Command("delete_wallet"))
+async def cmd_delete_wallet(message: Message):
+    wallets = await OrderService.get_wallets(active_only=False)
+    if not wallets:
+        await message.answer("💳 Кошельков пока нет.", reply_markup=admin_panel_kb())
+        return
+    builder = InlineKeyboardBuilder()
+    for w in wallets:
+        builder.row(
+            InlineKeyboardButton(
+                text=f"🗑 {w['network']}: {w['address']}",
+                callback_data=f"admin:wallet_del:{w['id']}",
+            )
+        )
+    builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="admin:wallets"))
+    await message.answer(
+        "💳 Выберите кошелёк для удаления:",
+        reply_markup=builder.as_markup(),
+    )
+
+
+@router.callback_query(F.data.regexp(r"^admin:wallet_del:\d+$"))
+async def cb_admin_wallet_delete(callback: CallbackQuery):
+    wallet_id = int(callback.data.split(":")[2])
+    wallet = await OrderService.get_wallet(wallet_id)
+    if not wallet:
+        await callback.answer("Кошелёк не найден", show_alert=True)
+        return
+    await callback.message.edit_text(
+        f"🗑 Удалить кошелёк <b>{escape(wallet['network'])}</b>: "
+        f"<code>{escape(wallet['address'])}</code>?",
+        reply_markup=confirm_kb(f"admin:wallet_del_yes:{wallet_id}", "admin:wallets"),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.regexp(r"^admin:wallet_del_yes:\d+$"))
+async def cb_admin_wallet_delete_yes(callback: CallbackQuery):
+    wallet_id = int(callback.data.split(":")[2])
+    success = await OrderService.delete_wallet(wallet_id)
+    if success:
+        await callback.message.edit_text(
+            "✅ Кошелёк удалён",
+            reply_markup=admin_panel_kb(),
+        )
+        await callback.answer()
+    else:
+        await callback.answer("Ошибка удаления", show_alert=True)
+
+
+# ── Баланс ───────────────────────────────────────────────
 
 @router.callback_query(F.data == "admin:balance")
 async def cb_admin_balance(callback: CallbackQuery):

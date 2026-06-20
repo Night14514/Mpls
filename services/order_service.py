@@ -73,6 +73,13 @@ class OrderService(OrderEngine):
                     data,
                     caption=f"📦 {product.title}\n\nВаш цифровой товар",
                 )
+            elif ctype == "video":
+                await bot.send_video(
+                    telegram_id,
+                    data,
+                    caption=f"📦 {product.title}\n\nВаш цифровой товар",
+                    supports_streaming=True,
+                )
             elif ctype == "link":
                 await bot.send_message(
                     telegram_id,

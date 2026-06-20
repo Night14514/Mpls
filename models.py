@@ -71,6 +71,8 @@ class Product:
     content_data: Optional[str] = None
     created_at: str = ""
     category_name: Optional[str] = None
+    video: Optional[str] = None
+    content_type: Optional[str] = None
 
 
 @dataclass

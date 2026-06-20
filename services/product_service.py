@@ -46,6 +46,8 @@ class ProductService:
             content_data=row["content_data"],
             created_at=row["created_at"],
             category_name=row["category_name"] if "category_name" in row.keys() else None,
+            video=row["video"] if "video" in row.keys() else None,
+            content_type=row["content_type"] if "content_type" in row.keys() else None,
         )
 
     @staticmethod
@@ -170,6 +172,7 @@ class ProductService:
         is_hidden: bool = False,
         price_usd: Optional[float] = None,
         price_rub: Optional[float] = None,
+        video: Optional[str] = None,
     ) -> Optional[Product]:
         async with get_db() as db:
             await db.execute(

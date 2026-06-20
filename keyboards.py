@@ -306,7 +306,12 @@ def admin_order_confirm_kb(order_id: int) -> InlineKeyboardMarkup:
                 ) 
             ] 
         ] 
-    ) 
+    )
+
+def admin_product_content_video_kb() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🎥 Видео", callback_data="admin:product_content_video"))
+    return builder.as_markup()
  
  
 def admin_panel_kb() -> InlineKeyboardMarkup: 
@@ -395,6 +400,7 @@ def admin_product_edit_fields_kb(product_id: int) -> InlineKeyboardMarkup:
         ("📂 Категория", "category"), 
         ("🖼 Фото", "photo"), 
         ("📎 Контент", "content"), 
+        ("🎥 Видео", "video"),
     ] 
     for label, field in fields: 
         builder.row( 

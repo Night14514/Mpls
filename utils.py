@@ -121,6 +121,7 @@ def encode_content_data(content_type: str, data: str) -> str:
         return ""
     type_map = {
         "photo": "photo",
+        "video": "video",
         "document": "file",
         "text": "text",
         "link": "link",
@@ -138,6 +139,7 @@ def parse_content_data(content: str) -> dict:
     type:text|data:текст
     type:code|data:ABC123
     type:file|path:/path или file_id
+    type:video|data:file_id или URL
     """
     result = {"type": "text", "data": content}
     if not content:

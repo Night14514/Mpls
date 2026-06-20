@@ -15,6 +15,7 @@ class AdminProductStates(StatesGroup):
     photo = State()
     content = State()
     confirm = State()
+    video = State()
 
 
 class AdminCategoryStates(StatesGroup):
