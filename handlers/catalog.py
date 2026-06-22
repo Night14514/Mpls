@@ -122,7 +122,9 @@ async def cb_product(callback: CallbackQuery, db_user: User):
         await callback.answer("🔒 Товар недоступен", show_alert=True)
         return
 
-    text = format_product_card(product)
+    from utils import get_product_price_with_discount
+    discounted_price = await get_product_price_with_discount(product, db_user)
+    text = format_product_card(product, discounted_price=discounted_price)
     kb = product_card_kb(product_id, product.category_id)
 
     if product.photo:
@@ -154,7 +156,9 @@ async def cb_buy_balance(callback: CallbackQuery, db_user: User):
         return
 
     user = await UserService.get_by_telegram_id(db_user.telegram_id)
-    price = get_product_price(product)
+    from utils import get_product_price_with_discount
+    price = await get_product_price_with_discount(product, user)
+    base_price = get_product_price(product)
     if user.balance < price:
         text = (
             "❌ <b>Недостаточно средств</b>\n\n"
@@ -193,10 +197,11 @@ async def cb_buy_balance(callback: CallbackQuery, db_user: User):
     )
     await OrderService.deliver_content(callback.bot, user.telegram_id, order.id)
 
+    price_note = f" (скидка VIP: {format_price(base_price - price)})" if price < base_price else ""
     confirm_text = (
         "✅ <b>Покупка оформлена!</b>\n\n"
         f"🛍 {product.title}\n"
-        f"💰 Списано: {format_price(price)}\n"
+        f"💰 Списано: {format_price(price)}{price_note}\n"
         f"💳 Остаток: {format_price(new_balance)}"
     )
     await safe_edit_or_send(callback, confirm_text, reply_markup=back_to_menu_kb())

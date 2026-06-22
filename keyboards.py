@@ -99,11 +99,26 @@ def currency_selection_kb() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def profile_kb() -> InlineKeyboardMarkup: 
-    """Кнопки профиля.""" 
-    builder = InlineKeyboardBuilder() 
-    builder.row(InlineKeyboardButton(text="💳 Пополнить баланс", callback_data="profile:topup")) 
-    builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:main")) 
+def topup_methods_kb() -> InlineKeyboardMarkup:
+    """Выбор способа пополнения баланса."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="💎 Crypto Bot", callback_data="topup:method:crypto"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="💳 Ручной перевод", callback_data="topup:method:manual"),
+    )
+    builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:profile"))
+    return builder.as_markup()
+
+
+def profile_kb(is_vip: bool = False) -> InlineKeyboardMarkup:
+    """Кнопки профиля."""
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="💳 Пополнить баланс", callback_data="profile:topup"))
+    if not is_vip:
+        builder.row(InlineKeyboardButton(text="⭐ VIP доступ", callback_data="vip:info"))
+    builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:main"))
     return builder.as_markup() 
  
  
@@ -317,36 +332,72 @@ def admin_product_content_video_kb() -> InlineKeyboardMarkup:
     return builder.as_markup()
  
  
-def admin_panel_kb() -> InlineKeyboardMarkup: 
-    """Админ-панель.""" 
-    builder = InlineKeyboardBuilder() 
-    builder.row( 
-        InlineKeyboardButton(text="📦 Товары", callback_data="admin:products"), 
-        InlineKeyboardButton(text="📂 Категории", callback_data="admin:categories"), 
-    ) 
-    builder.row( 
-        InlineKeyboardButton(text="💰 Баланс", callback_data="admin:balance"), 
-        InlineKeyboardButton(text="🎁 Промокоды", callback_data="admin:promos"), 
-    ) 
-    builder.row( 
-        InlineKeyboardButton(text="📊 Статистика", callback_data="admin:stats"), 
-        InlineKeyboardButton(text="👤 Пользователи", callback_data="admin:users"), 
-    ) 
-    builder.row( 
+def admin_panel_kb(has_hidden_access: bool = False) -> InlineKeyboardMarkup:
+    """Админ-панель."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="📦 Товары", callback_data="admin:products"),
+        InlineKeyboardButton(text="📂 Категории", callback_data="admin:categories"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="💰 Баланс", callback_data="admin:balance"),
+        InlineKeyboardButton(text="🎁 Промокоды", callback_data="admin:promos"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="📊 Статистика", callback_data="admin:stats"),
+        InlineKeyboardButton(text="👤 Пользователи", callback_data="admin:users"),
+    )
+    builder.row(
         InlineKeyboardButton(text="💳 Пополнения", callback_data="admin:topups"),
-        InlineKeyboardButton(text="💼 Кошельки", callback_data="admin:wallets"), 
-    ) 
-    builder.row( 
-        InlineKeyboardButton(text="💎 Crypto", callback_data="admin:crypto"), 
-        InlineKeyboardButton(text="⚙️ Настройки", callback_data="admin:settings"), 
+        InlineKeyboardButton(text="💼 Кошельки", callback_data="admin:wallets"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="⭐ VIP", callback_data="admin:vip"),
+        InlineKeyboardButton(text="💎 Crypto", callback_data="admin:crypto"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="⚙️ Настройки", callback_data="admin:settings"),
     )
     builder.row(
         InlineKeyboardButton(text="👥 Реф система", callback_data="admin:ref:menu"),
     )
-    builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:main")) 
+    builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:main"))
     return builder.as_markup()
  
  
+def admin_vip_kb() -> InlineKeyboardMarkup:
+    """VIP-меню админки."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="⚙️ Настройки VIP", callback_data="admin:vip:settings"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="👥 Список VIP", callback_data="admin:vip:list"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="🎁 Выдать VIP", callback_data="admin:vip:grant"),
+    )
+    builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="admin:panel"))
+    return builder.as_markup()
+
+
+def admin_vip_settings_kb(settings: dict) -> InlineKeyboardMarkup:
+    """Клавиатура настроек VIP."""
+    builder = InlineKeyboardBuilder()
+    status = "✅" if settings.get("enabled") else "❌"
+    builder.row(
+        InlineKeyboardButton(text=f"{status} Включено", callback_data="admin:vip:toggle_enabled"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="💰 Цена", callback_data="admin:vip:set_price"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="🎁 Скидка %", callback_data="admin:vip:set_discount"),
+    )
+    builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="admin:vip"))
+    return builder.as_markup()
+
+
 def admin_balance_kb() -> InlineKeyboardMarkup: 
     builder = InlineKeyboardBuilder() 
     builder.row(InlineKeyboardButton(text="➕ Начислить", callback_data="admin:bal_add")) 
@@ -419,7 +470,25 @@ def admin_product_edit_fields_kb(product_id: int) -> InlineKeyboardMarkup:
     return builder.as_markup() 
  
  
-def admin_categories_kb(categories: List[Category]) -> InlineKeyboardMarkup: 
+def admin_category_actions_kb(category_id: int, has_hidden_access: bool = False) -> InlineKeyboardMarkup:
+    """Действия с категорией."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="✏️ Название", callback_data=f"admin:cat:edit:{category_id}"),
+    )
+    if has_hidden_access:
+        builder.row(
+            InlineKeyboardButton(text="⬆️ Вверх", callback_data=f"admin:cat:up:{category_id}"),
+            InlineKeyboardButton(text="⬇️ Вниз", callback_data=f"admin:cat:down:{category_id}"),
+        )
+    builder.row(
+        InlineKeyboardButton(text="🗑 Удалить", callback_data=f"admin:cat:del:{category_id}"),
+    )
+    builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="admin:categories"))
+    return builder.as_markup()
+
+
+def admin_categories_kb(categories: List[Category], has_hidden_access: bool = False) -> InlineKeyboardMarkup: 
     builder = InlineKeyboardBuilder() 
     builder.row(InlineKeyboardButton(text="➕ Добавить", callback_data="admin:cat_add")) 
     for c in categories: 

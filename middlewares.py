@@ -87,3 +87,42 @@ class ThrottleMiddleware(BaseMiddleware):
             self._last_click[uid] = now
 
         return await handler(event, data)
+
+
+class RateLimitMiddleware(BaseMiddleware):
+    """Расширенная защита от rate limiting и brute force."""
+
+    def __init__(self, max_requests: int = 30, window: int = 60):
+        self.max_requests = max_requests
+        self.window = window
+        self._requests: Dict[int, List[float]] = {}
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: Dict[str, Any],
+    ) -> Any:
+        import time
+
+        if isinstance(event, (Message, CallbackQuery)) and event.from_user:
+            uid = event.from_user.id
+            now = time.monotonic()
+            
+            # Clean old requests
+            if uid not in self._requests:
+                self._requests[uid] = []
+            self._requests[uid] = [t for t in self._requests[uid] if now - t < self.window]
+            
+            # Check rate limit
+            if len(self._requests[uid]) >= self.max_requests:
+                logger.warning("Rate limit exceeded for user %s", uid)
+                if isinstance(event, CallbackQuery):
+                    await event.answer("⚠️ Слишком много запросов. Подождите.", show_alert=True)
+                elif isinstance(event, Message):
+                    await event.answer("⚠️ Слишком много запросов. Подождите.")
+                return None
+            
+            self._requests[uid].append(now)
+
+        return await handler(event, data)

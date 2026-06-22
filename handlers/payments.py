@@ -128,8 +128,32 @@ async def _send_crypto_invoice(
 async def cb_crypto_check(callback: CallbackQuery, db_user: User):
     """Ручная проверка статуса Crypto (дополнительно к scheduler)."""
     invoice_id = callback.data.split(":")[1]
-    await _process_crypto_payment(callback.bot, callback.from_user.id, db_user, invoice_id)
-    await callback.answer()
+    
+    # Check if this is a balance topup invoice
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT payload FROM crypto_invoices WHERE invoice_id = ?",
+            (invoice_id,)
+        )
+        row = await cursor.fetchone()
+        if row and (row["payload"] or "").startswith(("vip_", "balance_")):
+            # Handle balance topup check
+            crypto = CryptoPaymentService()
+            invoice = await crypto.get_invoice_by_id(invoice_id)
+            if invoice and invoice.get("status") == "paid":
+                await _process_crypto_balance_topup(
+                    callback.bot, 
+                    invoice_id, 
+                    db_user.id, 
+                    invoice, 
+                    row["payload"]
+                )
+                await callback.answer("✅ Платёж подтвержден!")
+            else:
+                await callback.answer("Платёж ещё не оплачен")
+        else:
+            await _process_crypto_payment(callback.bot, callback.from_user.id, db_user, invoice_id)
+            await callback.answer()
 
 
 # ── Обработка Crypto платежей ─────────────────────────────────
@@ -186,10 +210,10 @@ async def poll_crypto_invoices(bot: Bot):
         # Получаем все активные инвойсы
         async with get_db() as db:
             cursor = await db.execute(
-                """SELECT invoice_id, user_id, order_id 
-                   FROM crypto_invoices 
-                   WHERE status = 'active' 
-                   ORDER BY created_at DESC 
+                """SELECT ci.invoice_id, ci.user_id, ci.order_id, ci.amount, ci.asset
+                   FROM crypto_invoices ci
+                   WHERE ci.status = 'active'
+                   ORDER BY ci.created_at DESC
                    LIMIT 50"""
             )
             invoices = await cursor.fetchall()
@@ -200,6 +224,8 @@ async def poll_crypto_invoices(bot: Bot):
             invoice_id = row["invoice_id"]
             user_id = row["user_id"]
             order_id = row["order_id"]
+            amount = row["amount"]
+            asset = row["asset"]
             
             try:
                 # Проверяем статус через API
@@ -210,7 +236,6 @@ async def poll_crypto_invoices(bot: Bot):
                 if invoice.get("status") == "paid":
                     # Проверяем, не был ли платеж уже обработан
                     if await OrderService.is_payment_processed("crypto", invoice_id):
-                        # Обновляем статус инвойса
                         async with get_db() as db:
                             await db.execute(
                                 "UPDATE crypto_invoices SET status = 'paid' WHERE invoice_id = ?",
@@ -218,37 +243,127 @@ async def poll_crypto_invoices(bot: Bot):
                             )
                         continue
                     
-                    # Завершаем заказ
-                    success = await OrderService.complete_order(
-                        order_id=order_id,
-                        provider="crypto",
-                        provider_payment_id=invoice_id,
-                        amount=float(invoice.get("amount", 0)),
-                        currency=invoice.get("asset", "USDT"),
-                    )
+                    payload = invoice.get("payload", "")
                     
-                    if success:
-                        # Получаем telegram_id пользователя
-                        from services.user_service import UserService
-                        user = await UserService.get_by_id(user_id)
-                        if user:
-                            await OrderService.deliver_content(bot, user.telegram_id, order_id)
-                            await bot.send_message(
-                                user.telegram_id, 
-                                "✅ Оплата подтверждена! Товар отправлен."
+                    # Обработка пополнения баланса или покупки VIP
+                    if payload.startswith("vip_") or payload.startswith("balance_"):
+                        await _process_crypto_balance_topup(bot, invoice_id, user_id, invoice, payload)
+                    else:
+                        # Обычная оплата заказа
+                        if order_id:
+                            success = await OrderService.complete_order(
+                                order_id=order_id,
+                                provider="crypto",
+                                provider_payment_id=invoice_id,
+                                amount=float(invoice.get("amount", 0)),
+                                currency=invoice.get("asset", "USDT"),
                             )
-                        
-                        # Обновляем статус инвойса
-                        async with get_db() as db:
-                            await db.execute(
-                                "UPDATE crypto_invoices SET status = 'paid' WHERE invoice_id = ?",
-                                (invoice_id,)
-                            )
+                            
+                            if success:
+                                from services.user_service import UserService
+                                user = await UserService.get_by_id(user_id)
+                                if user:
+                                    await OrderService.deliver_content(bot, user.telegram_id, order_id)
+                                    await bot.send_message(
+                                        user.telegram_id, 
+                                        "✅ Оплата подтверждена! Товар отправлен."
+                                    )
+                    
+                    # Обновляем статус инвойса
+                    async with get_db() as db:
+                        await db.execute(
+                            "UPDATE crypto_invoices SET status = 'paid' WHERE invoice_id = ?",
+                            (invoice_id,)
+                        )
             except Exception as e:
                 logger.error("Ошибка обработки инвойса %s: %s", invoice_id, e)
                 
     except Exception as e:
         logger.error("Ошибка poll_crypto_invoices: %s", e)
+
+
+async def _process_crypto_balance_topup(bot: Bot, invoice_id: str, user_id: int, invoice: dict, payload: str):
+    """Обработка успешной оплаты пополнения баланса через Crypto."""
+    from services.user_service import UserService
+    from services.vip_service import VIPService
+    
+    settings = get_settings()
+    crypto_amount = float(invoice.get("amount", 0))
+    rub_amount = round(crypto_amount * settings.CRYPTO_USDT_RATE, 2)
+    
+    is_vip_purchase = payload.startswith("vip_")
+    
+    async with get_db() as db:
+        # Проверяем idempotency
+        cursor = await db.execute(
+            "SELECT id FROM payments WHERE provider = 'crypto' AND provider_payment_id = ?",
+            (invoice_id,)
+        )
+        if await cursor.fetchone():
+            logger.warning("Crypto payment already processed: %s", invoice_id)
+            return
+        
+        # Начисляем баланс
+        await db.execute(
+            "UPDATE users SET balance = balance + ? WHERE id = ?",
+            (rub_amount, user_id)
+        )
+        
+        # Записываем платеж
+        await db.execute(
+            """INSERT INTO payments (user_id, provider, provider_payment_id, amount, currency, status)
+               VALUES (?, 'crypto', ?, ?, ?, 'paid')""",
+            (user_id, invoice_id, crypto_amount, invoice.get("asset", "USDT"))
+        )
+        
+        # Если это покупка VIP, выдаём VIP
+        if is_vip_purchase:
+            await VIPService.grant_vip(user_id, rub_amount, "crypto", invoice_id)
+        
+        # Обновляем статус в balance_topups если есть запись
+        await db.execute(
+            """UPDATE balance_topups 
+               SET status = 'approved' 
+               WHERE user_id = ? AND status = 'pending' AND receipt_type = 'crypto'
+               LIMIT 1""",
+            (user_id,)
+        )
+    
+    # Уведомляем пользователя
+    user = await UserService.get_by_id(user_id)
+    if user:
+        if is_vip_purchase:
+            await bot.send_message(
+                user.telegram_id,
+                f"✅ Оплата подтверждена!\n\n💰 Баланс пополнен: {rub_amount} ₽\n⭐ VIP-доступ активирован!"
+            )
+        else:
+            await bot.send_message(
+                user.telegram_id,
+                f"✅ Оплата подтверждена!\n\n💰 Баланс пополнен: {rub_amount} ₽"
+            )
+    
+    # Уведомляем админов
+    from config import get_settings
+    config = get_settings()
+    username = f"@{user.username}" if user and user.username else "—"
+    admin_ids = set(config.admin_ids)
+    admins = await UserService.get_all_admins()
+    for a in admins:
+        admin_ids.add(a.telegram_id)
+    
+    for admin_id in admin_ids:
+        try:
+            await bot.send_message(
+                admin_id,
+                f"💳 <b>Крипто-пополнение</b>\n\n"
+                f"👤 {username} (ID: {user.telegram_id if user else user_id})\n"
+                f"💰 {crypto_amount} {invoice.get('asset', 'USDT')} → {rub_amount} ₽"
+                f"{' (VIP)' if is_vip_purchase else ''}",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
 
 
 # ── Ручные криптопереводы ───────────────────────────────────

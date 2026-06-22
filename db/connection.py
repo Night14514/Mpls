@@ -271,6 +271,25 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
             updated_at TEXT DEFAULT (datetime('now'))
         );
 
+        CREATE TABLE IF NOT EXISTS vip_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            enabled INTEGER NOT NULL DEFAULT 1,
+            price REAL NOT NULL DEFAULT 1000.0,
+            discount_percent INTEGER NOT NULL DEFAULT 10,
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS vip_purchases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            amount REAL NOT NULL,
+            payment_method TEXT,
+            payment_id TEXT,
+            status TEXT DEFAULT 'completed',
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id);
         CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id);
         CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
@@ -304,6 +323,10 @@ async def _migrate_columns(db: aiosqlite.Connection) -> None:
         "ALTER TABLE products ADD COLUMN price_usd REAL",
         "ALTER TABLE products ADD COLUMN price_rub REAL",
         "ALTER TABLE users ADD COLUMN referral_code TEXT",
+        "ALTER TABLE users ADD COLUMN is_vip INTEGER DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN vip_purchased_at TEXT",
+        "ALTER TABLE users ADD COLUMN vip_expiry TEXT",
+        "ALTER TABLE categories ADD COLUMN sort_order INTEGER DEFAULT 0",
     ]
     for sql in migrations:
         await _safe_execute(db, sql)
@@ -317,6 +340,20 @@ async def _migrate_columns(db: aiosqlite.Connection) -> None:
         db,
         "INSERT OR IGNORE INTO referral_settings (id, enabled, threshold, reward_amount) "
         "VALUES (1, 1, 5, 500)",
+    )
+    await _safe_execute(
+        db,
+        "INSERT OR IGNORE INTO vip_settings (id, enabled, price, discount_percent) "
+        "VALUES (1, 1, 1000.0, 10)",
+    )
+
+    # Initialize sort_order for existing categories based on their ID
+    await db.execute(
+        """
+        UPDATE categories
+        SET sort_order = id
+        WHERE sort_order = 0 OR sort_order IS NULL
+        """
     )
 
     await db.execute(

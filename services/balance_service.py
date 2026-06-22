@@ -95,10 +95,18 @@ class BalanceService:
                 "SELECT telegram_id FROM users WHERE id = ?", (row["user_id"],)
             )
             user_row = await cursor.fetchone()
+            
+            # Check if this is a VIP purchase
+            is_vip_purchase = row["receipt_type"] and row["receipt_type"].startswith("vip_")
+            if is_vip_purchase:
+                from services.vip_service import VIPService
+                await VIPService.grant_vip(row["user_id"], row["amount"], "manual", f"topup_{topup_id}")
+            
             return {
                 "telegram_id": user_row["telegram_id"],
                 "amount": row["amount"],
                 "user_id": row["user_id"],
+                "is_vip_purchase": is_vip_purchase,
             }
 
     @classmethod

@@ -21,6 +21,9 @@ class User:
     country: Optional[str] = None
     city: Optional[str] = None
     is_registered: bool = False
+    is_vip: bool = False
+    vip_purchased_at: Optional[str] = None
+    vip_expiry: Optional[str] = None
 
 
 @dataclass
@@ -53,6 +56,7 @@ class Category:
     id: int
     name: str
     is_hidden: bool = False
+    sort_order: int = 0
 
 
 @dataclass
@@ -179,4 +183,13 @@ class ReferralSettings:
     enabled: bool
     threshold: int
     reward_amount: float
+    updated_at: str = ""
+
+
+@dataclass
+class VIPSettings:
+    """Настройки VIP-доступа (singleton-строка)."""
+    enabled: bool
+    price: float
+    discount_percent: int
     updated_at: str = ""

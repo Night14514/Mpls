@@ -52,7 +52,9 @@ class ProductService:
 
     @staticmethod
     def _row_to_category(row) -> Category:
-        return Category(id=row["id"], name=row["name"], is_hidden=bool(row["is_hidden"]))
+        keys = row.keys() if hasattr(row, "keys") else []
+        sort_order = row["sort_order"] if "sort_order" in keys else 0
+        return Category(id=row["id"], name=row["name"], is_hidden=bool(row["is_hidden"]), sort_order=sort_order)
 
     # ── Категории ─────────────────────────────────────────────
 
@@ -60,20 +62,20 @@ class ProductService:
     async def get_categories(cls, include_hidden: bool = False, trusted: bool = False) -> List[Category]:
         async with get_db() as db:
             if include_hidden and trusted:
-                cursor = await db.execute("SELECT * FROM categories ORDER BY name")
+                cursor = await db.execute("SELECT * FROM categories ORDER BY sort_order ASC, name ASC")
             elif include_hidden:
                 cursor = await db.execute(
-                    "SELECT * FROM categories WHERE is_hidden = 0 ORDER BY name"
+                    "SELECT * FROM categories WHERE is_hidden = 0 ORDER BY sort_order ASC, name ASC"
                 )
             else:
                 cursor = await db.execute(
-                    "SELECT * FROM categories WHERE is_hidden = 0 ORDER BY name"
+                    "SELECT * FROM categories WHERE is_hidden = 0 ORDER BY sort_order ASC, name ASC"
                 )
             rows = await cursor.fetchall()
             result = [cls._row_to_category(r) for r in rows]
             if trusted:
                 cursor = await db.execute(
-                    "SELECT * FROM categories WHERE is_hidden = 1 ORDER BY name"
+                    "SELECT * FROM categories WHERE is_hidden = 1 ORDER BY sort_order ASC, name ASC"
                 )
                 hidden_rows = await cursor.fetchall()
                 result.extend([cls._row_to_category(r) for r in hidden_rows])
@@ -106,6 +108,96 @@ class ProductService:
         async with get_db() as db:
             cursor = await db.execute("DELETE FROM categories WHERE id = ?", (category_id,))
             return cursor.rowcount > 0
+
+    @classmethod
+    async def move_category_up(cls, category_id: int) -> bool:
+        """Переместить категорию вверх (уменьшить sort_order)."""
+        async with transaction("IMMEDIATE") as db:
+            # Get current category and its sort_order
+            cursor = await db.execute(
+                "SELECT id, sort_order FROM categories WHERE id = ?", (category_id,)
+            )
+            row = await cursor.fetchone()
+            if not row:
+                return False
+            
+            current_order = row["sort_order"]
+            
+            # Find the category above (with lower sort_order)
+            cursor = await db.execute(
+                """SELECT id, sort_order FROM categories
+                   WHERE sort_order < ?
+                   ORDER BY sort_order DESC
+                   LIMIT 1""",
+                (current_order,),
+            )
+            above_row = await cursor.fetchone()
+            if not above_row:
+                return False  # Already at the top
+            
+            # Swap sort_orders
+            await db.execute(
+                "UPDATE categories SET sort_order = ? WHERE id = ?",
+                (above_row["sort_order"], category_id),
+            )
+            await db.execute(
+                "UPDATE categories SET sort_order = ? WHERE id = ?",
+                (current_order, above_row["id"]),
+            )
+            return True
+
+    @classmethod
+    async def move_category_down(cls, category_id: int) -> bool:
+        """Переместить категорию вниз (увеличить sort_order)."""
+        async with transaction("IMMEDIATE") as db:
+            # Get current category and its sort_order
+            cursor = await db.execute(
+                "SELECT id, sort_order FROM categories WHERE id = ?", (category_id,)
+            )
+            row = await cursor.fetchone()
+            if not row:
+                return False
+            
+            current_order = row["sort_order"]
+            
+            # Find the category below (with higher sort_order)
+            cursor = await db.execute(
+                """SELECT id, sort_order FROM categories
+                   WHERE sort_order > ?
+                   ORDER BY sort_order ASC
+                   LIMIT 1""",
+                (current_order,),
+            )
+            below_row = await cursor.fetchone()
+            if not below_row:
+                return False  # Already at the bottom
+            
+            # Swap sort_orders
+            await db.execute(
+                "UPDATE categories SET sort_order = ? WHERE id = ?",
+                (below_row["sort_order"], category_id),
+            )
+            await db.execute(
+                "UPDATE categories SET sort_order = ? WHERE id = ?",
+                (current_order, below_row["id"]),
+            )
+            return True
+
+    @classmethod
+    async def set_category_sort_order(cls, category_id: int, new_order: int) -> bool:
+        """Установить конкретный sort_order для категории."""
+        async with transaction("IMMEDIATE") as db:
+            cursor = await db.execute(
+                "SELECT id FROM categories WHERE id = ?", (category_id,)
+            )
+            if not await cursor.fetchone():
+                return False
+            
+            await db.execute(
+                "UPDATE categories SET sort_order = ? WHERE id = ?",
+                (new_order, category_id),
+            )
+            return True
 
     # ── Товары ────────────────────────────────────────────────
 

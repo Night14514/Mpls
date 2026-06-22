@@ -37,7 +37,7 @@ async def main() -> None:
         from aiogram.fsm.storage.memory import MemoryStorage
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-        from middlewares import ThrottleMiddleware, UserMiddleware
+        from middlewares import ThrottleMiddleware, UserMiddleware, RateLimitMiddleware
         from handlers import admin, catalog, orders, payments, profile, promo, registration, start, referral
 
         bot = Bot(
@@ -51,6 +51,8 @@ async def main() -> None:
         dp.callback_query.middleware(UserMiddleware())
         dp.message.middleware(ThrottleMiddleware())
         dp.callback_query.middleware(ThrottleMiddleware())
+        dp.message.middleware(RateLimitMiddleware())
+        dp.callback_query.middleware(RateLimitMiddleware())
 
         # Роутеры (порядок важен: payments перед catalog для pre_checkout)
         dp.include_router(registration.router)

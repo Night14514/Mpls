@@ -14,6 +14,7 @@ from config import get_settings
 from keyboards import (
     admin_balance_kb,
     admin_categories_kb,
+    admin_category_actions_kb,
     admin_order_confirm_kb,
     admin_panel_kb,
     admin_product_actions_kb,
@@ -23,6 +24,8 @@ from keyboards import (
     admin_referral_back_kb,
     admin_referral_menu_kb,
     admin_referral_settings_kb,
+    admin_vip_kb,
+    admin_vip_settings_kb,
     back_kb,
     categories_kb,
     confirm_kb,
@@ -46,6 +49,7 @@ from states import (
     AdminUserStates,
     AdminWalletStates,
     AdminReferralSettingsStates,
+    AdminVIPSettingsStates,
 )
 from utils import encode_content_data, escape, format_price, get_product_price, safe_edit_or_send, validate_price
 
@@ -488,45 +492,13 @@ async def msg_admin_cat_name(message: Message, state: FSMContext):
 
 
 @router.callback_query(F.data == "admin:categories")
-async def cb_admin_categories(callback: CallbackQuery):
+async def cb_admin_categories(callback: CallbackQuery, db_user: User):
+    from services.permission_service import PermissionService
+    has_hidden = PermissionService.has_hidden_access(db_user.telegram_id)
     categories = await ProductService.get_categories(include_hidden=True, trusted=True)
     await callback.message.edit_text(
         "📂 <b>Категории</b>",
-        reply_markup=admin_categories_kb(categories),
-        parse_mode="HTML",
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data.regexp(r"^admin:cat:\d+$"))
-async def cb_admin_cat_detail(callback: CallbackQuery):
-    cat_id = int(callback.data.split(":")[2])
-    cat = await ProductService.get_category(cat_id)
-    if not cat:
-        await callback.answer("Не найдена", show_alert=True)
-        return
-    hidden = "🔒 скрытая" if cat.is_hidden else "✅ видимая"
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(text="🗑 Удалить", callback_data=f"admin:cat_del:{cat_id}"),
-    )
-    builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="admin:categories"))
-    await callback.message.edit_text(
-        f"📂 <b>{escape(cat.name)}</b>\n\n"
-        f"ID: {cat.id}\n"
-        f"Статус: {hidden}",
-        reply_markup=builder.as_markup(),
-        parse_mode="HTML",
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("admin:cat_del:"))
-async def cb_admin_cat_delete(callback: CallbackQuery):
-    cat_id = int(callback.data.split(":")[2])
-    await callback.message.edit_text(
-        f"🗑 Удалить категорию #{cat_id}?",
-        reply_markup=confirm_kb(f"admin:cat_del_yes:{cat_id}", "admin:categories"),
+        reply_markup=admin_categories_kb(categories, has_hidden_access=has_hidden),
         parse_mode="HTML",
     )
     await callback.answer()
@@ -1217,3 +1189,243 @@ async def msg_admin_ref_amount(message: Message, state: FSMContext):
         f"✅ Размер награды обновлён: {format_price(new_settings.reward_amount)}",
         reply_markup=admin_referral_settings_kb(new_settings.enabled),
     )
+
+
+# ── VIP Admin ───────────────────────────────────────────────
+
+@router.callback_query(F.data == "admin:vip")
+async def cb_admin_vip(callback: CallbackQuery):
+    """VIP-меню админки."""
+    from services.vip_service import VIPService
+    
+    settings = await VIPService.get_settings()
+    text = (
+        "⭐ <b>VIP-доступ</b>\n\n"
+        f"Статус: {'✅ Включен' if settings.enabled else '❌ Выключен'}\n"
+        f"Стоимость: {format_price(settings.price)}\n"
+        f"Скидка: {settings.discount_percent}%"
+    )
+    await safe_edit_or_send(callback, text, reply_markup=admin_vip_kb())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:vip:settings")
+async def cb_admin_vip_settings(callback: CallbackQuery):
+    """Настройки VIP."""
+    from services.vip_service import VIPService
+    
+    settings = await VIPService.get_settings()
+    text = (
+        "⚙️ <b>Настройки VIP</b>\n\n"
+        f"Включено: {'✅ Да' if settings.enabled else '❌ Нет'}\n"
+        f"Стоимость: {format_price(settings.price)}\n"
+        f"Скидка: {settings.discount_percent}%"
+    )
+    await safe_edit_or_send(
+        callback, text, reply_markup=admin_vip_settings_kb({"enabled": settings.enabled})
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:vip:toggle_enabled")
+async def cb_admin_vip_toggle(callback: CallbackQuery):
+    """Переключить VIP."""
+    from services.vip_service import VIPService
+    
+    settings = await VIPService.get_settings()
+    new_settings = await VIPService.update_settings(
+        enabled=not settings.enabled,
+        price=settings.price,
+        discount_percent=settings.discount_percent,
+    )
+    await callback.answer(
+        "VIP включен" if new_settings.enabled else "VIP выключен"
+    )
+    text = (
+        "⚙️ <b>Настройки VIP</b>\n\n"
+        f"Включено: {'✅ Да' if new_settings.enabled else '❌ Нет'}\n"
+        f"Стоимость: {format_price(new_settings.price)}\n"
+        f"Скидка: {new_settings.discount_percent}%"
+    )
+    await safe_edit_or_send(
+        callback, text, reply_markup=admin_vip_settings_kb({"enabled": new_settings.enabled})
+    )
+
+
+@router.callback_query(F.data == "admin:vip:set_price")
+async def cb_admin_vip_set_price(callback: CallbackQuery, state: FSMContext):
+    """Установить цену VIP."""
+    await state.set_state(AdminVIPSettingsStates.price)
+    await state.update_data(vip_setting_action="price")
+    await safe_edit_or_send(
+        callback,
+        "💰 Введите новую стоимость VIP в рублях:",
+        reply_markup=back_kb("admin:vip:settings"),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:vip:set_discount")
+async def cb_admin_vip_set_discount(callback: CallbackQuery, state: FSMContext):
+    """Установить скидку VIP."""
+    await state.set_state(AdminVIPSettingsStates.discount)
+    await state.update_data(vip_setting_action="discount")
+    await safe_edit_or_send(
+        callback,
+        "🎁 Введите новую скидку VIP в процентах (0-100):",
+        reply_markup=back_kb("admin:vip:settings"),
+    )
+    await callback.answer()
+
+
+@router.message(AdminVIPSettingsStates.price)
+async def msg_admin_vip_price(message: Message, state: FSMContext, db_user: User):
+    """Обработка ввода цены VIP."""
+    from services.vip_service import VIPService
+    
+    amount = validate_price(message.text)
+    if amount is None:
+        await message.answer("❌ Введите корректное число")
+        return
+    
+    settings = await VIPService.get_settings()
+    new_settings = await VIPService.update_settings(
+        enabled=settings.enabled,
+        price=amount,
+        discount_percent=settings.discount_percent,
+    )
+    await state.clear()
+    await message.answer(
+        f"✅ Цена VIP обновлена: {format_price(new_settings.price)}",
+        reply_markup=admin_vip_kb(),
+    )
+
+
+@router.message(AdminVIPSettingsStates.discount)
+async def msg_admin_vip_discount(message: Message, state: FSMContext, db_user: User):
+    """Обработка ввода скидки VIP."""
+    from services.vip_service import VIPService
+    
+    try:
+        discount = int(message.text.strip())
+        if not 0 <= discount <= 100:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Введите число от 0 до 100")
+        return
+    
+    settings = await VIPService.get_settings()
+    new_settings = await VIPService.update_settings(
+        enabled=settings.enabled,
+        price=settings.price,
+        discount_percent=discount,
+    )
+    await state.clear()
+    await message.answer(
+        f"✅ Скидка VIP обновлена: {new_settings.discount_percent}%",
+        reply_markup=admin_vip_kb(),
+    )
+
+
+@router.callback_query(F.data == "admin:vip:list")
+async def cb_admin_vip_list(callback: CallbackQuery):
+    """Список VIP-пользователей."""
+    from services.vip_service import VIPService
+    
+    vip_users = await VIPService.get_vip_users()
+    if not vip_users:
+        text = "👥 <b>VIP-пользователи</b>\n\nПока нет VIP-пользователей."
+    else:
+        lines = []
+        for u in vip_users[:50]:
+            username = f"@{u.username}" if u.username else "—"
+            lines.append(
+                f"👤 {username} (ID: <code>{u.telegram_id}</code>)\n"
+                f"   Баланс: {format_price(u.balance)}\n"
+                f"   Выдан: {u.vip_purchased_at or '—'}"
+            )
+        text = "👥 <b>VIP-пользователи</b>\n\n" + "\n\n".join(lines)
+    await safe_edit_or_send(callback, text, reply_markup=admin_vip_kb())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:vip:grant")
+async def cb_admin_vip_grant(callback: CallbackQuery, state: FSMContext):
+    """Выдать VIP пользователю."""
+    await state.set_state(AdminUserStates.search)
+    await safe_edit_or_send(
+        callback,
+        "👤 Введите <b>Telegram ID</b> или <b>@username</b> пользователя для выдачи VIP:",
+        reply_markup=back_kb("admin:vip"),
+    )
+    await callback.answer()
+
+
+# ── Category Reordering ──────────────────────────────────────
+
+@router.callback_query(F.data.startswith("admin:cat:"))
+async def cb_admin_category_action(callback: CallbackQuery, db_user: User):
+    """Действия с категорией."""
+    parts = callback.data.split(":")
+    
+    # Handle admin:cat:ID (view category details)
+    if len(parts) == 3 and parts[2].isdigit():
+        category_id = int(parts[2])
+        category = await ProductService.get_category(category_id)
+        if not category:
+            await callback.answer("Категория не найдена", show_alert=True)
+            return
+        
+        from services.permission_service import PermissionService
+        has_hidden = PermissionService.has_hidden_access(db_user.telegram_id)
+        
+        hidden = "🔒 скрытая" if category.is_hidden else "✅ видимая"
+        text = f"📂 <b>{escape(category.name)}</b>\n\n" f"ID: {category_id}\n" f"Статус: {hidden}\nПорядок: {category.sort_order}"
+        await safe_edit_or_send(
+            callback, text, reply_markup=admin_category_actions_kb(category_id, has_hidden)
+        )
+        await callback.answer()
+        return
+    
+    # Handle admin:cat:action:ID
+    if len(parts) >= 4:
+        action = parts[2]
+        category_id = int(parts[3]) if parts[3].isdigit() else None
+        
+        if not category_id:
+            await callback.answer("Неверный формат", show_alert=True)
+            return
+        
+        from services.permission_service import PermissionService
+        has_hidden = PermissionService.has_hidden_access(db_user.telegram_id)
+        
+        # Check hidden access for reordering actions
+        if action in ["up", "down"] and not has_hidden:
+            await callback.answer("⛔ Доступ запрещён", show_alert=True)
+            return
+        
+        # Validate callback server-side
+        if not await PermissionService.validate_callback(callback.data, db_user.telegram_id):
+            await callback.answer("⛔ Доступ запрещён", show_alert=True)
+            return
+        
+        if action == "up":
+            success = await ProductService.move_category_up(category_id)
+            await callback.answer("↑ Категория перемещена вверх" if success else "Ошибка")
+        elif action == "down":
+            success = await ProductService.move_category_down(category_id)
+            await callback.answer("↓ Категория перемещена вниз" if success else "Ошибка")
+        elif action == "edit":
+            # TODO: Add edit functionality
+            await callback.answer("Редактирование скоро будет доступно")
+        elif action == "del":
+            # Show delete confirmation
+            await callback.message.edit_text(
+                f"🗑 Удалить категорию #{category_id}?",
+                reply_markup=confirm_kb(f"admin:cat_del_yes:{category_id}", "admin:categories"),
+                parse_mode="HTML",
+            )
+            await callback.answer()
+        return
+    
+    await callback.answer("Неверный формат", show_alert=True)

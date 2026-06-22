@@ -92,3 +92,10 @@ class AdminReferralSettingsStates(StatesGroup):
     threshold = State()
     reward_amount = State()
     enabled = State()
+
+
+class AdminVIPSettingsStates(StatesGroup):
+    """Изменение настроек VIP."""
+    price = State()
+    discount = State()
+    enabled = State()

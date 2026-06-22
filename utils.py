@@ -44,14 +44,25 @@ def get_product_price(product: Product) -> float:
     return product.price
 
 
+async def get_product_price_with_discount(product: Product, user) -> float:
+    """Цена товара с учётом VIP-скидки."""
+    base_price = get_product_price(product)
+    from services.vip_service import VIPService
+    return await VIPService.calculate_discounted_price(base_price, user)
+
+
 def format_price_crypto(price: float, asset: str = "USDT") -> str:
     """Форматирование цены в криптовалюте."""
     return f"{price:.2f} {asset}"
 
 
-def format_product_card(product: Product, category_name: Optional[str] = None) -> str:
+def format_product_card(product: Product, category_name: Optional[str] = None, discounted_price: Optional[float] = None) -> str:
     """Карточка товара для маркета."""
-    price_line = f"💰 Цена: {format_price(get_product_price(product))}"
+    base_price = get_product_price(product)
+    if discounted_price is not None and discounted_price < base_price:
+        price_line = f"💰 Цена: {format_price(discounted_price)} (VIP: {format_price(base_price)})"
+    else:
+        price_line = f"💰 Цена: {format_price(base_price)}"
     return (
         f"🛍 <b>{escape(product.title)}</b>\n\n"
         f"📄 {escape(product.description or 'Описание отсутствует')}\n\n"

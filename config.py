@@ -47,13 +47,30 @@ class Settings(BaseSettings):
         description="Базовый URL Crypto Pay API", 
     ) 
     CRYPTO_POLL_INTERVAL: int = Field(default=30, description="Интервал проверки инвойсов (сек)") 
-    CRYPTO_ASSET: str = Field(default="USDT", description="Криптовалюта по умолчанию") 
+    CRYPTO_ASSET: str = Field(default="USDT", description="Криптовалюта по умолчанию")
+    CRYPTO_USDT_RATE: float = Field(default=95.0, description="Курс USDT к рублям для конвертации")
  
     # ── Ручные криптопереводы ───────────────────────────────── 
     MANUAL_CRYPTO_ENABLED: bool = Field( 
         default=False, 
         description="Показывать реквизиты кошельков для ручного перевода", 
     ) 
+ 
+    # ── VIP доступ ─────────────────────────────────────────────
+    VIP_ENABLED: bool = Field(default=True, description="Включить VIP-доступ")
+    VIP_PRICE: float = Field(default=1000.0, description="Стоимость VIP в рублях")
+    VIP_DISCOUNT_PERCENT: int = Field(default=10, description="Скидка VIP в процентах")
+    
+    # ── Безопасность ───────────────────────────────────────────
+    SECURITY_ADMIN_IDS: str = Field(default="", description="ID администраторов с расширенными правами через запятую")
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def security_admin_ids(self) -> List[int]:
+        """Список ID администраторов с расширенными правами."""
+        if not self.SECURITY_ADMIN_IDS.strip():
+            return []
+        return [int(x.strip()) for x in self.SECURITY_ADMIN_IDS.split(",") if x.strip()]
  
     # ── Прочее ──────────────────────────────────────────────── 
     REVIEWS_CHANNEL: str = Field(default="", description="Отзывы (https://t.me/+PX5XyGhCAFM1OTkx)")
