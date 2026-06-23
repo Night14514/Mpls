@@ -541,6 +541,26 @@ async def _copy_table_rows(
 
 async def _rebuild_product_fk_table(db: aiosqlite.Connection, table_name: str) -> None:
     old_table = f"{table_name}_fk_old"
+    old_table_exists = await _table_exists(db, old_table)
+    main_table_exists = await _table_exists(db, table_name)
+
+    if old_table_exists and main_table_exists:
+        logger.warning(
+            "Found orphaned backup table %s from a previous migration; dropping it.",
+            old_table,
+        )
+        await db.execute(f"DROP TABLE {old_table}")
+        old_table_exists = False
+
+    if old_table_exists and not main_table_exists:
+        logger.warning(
+            "Found incomplete migration for %s; restoring backup %s.",
+            table_name,
+            old_table,
+        )
+        await db.execute(f"ALTER TABLE {old_table} RENAME TO {table_name}")
+        old_table_exists = False
+
     columns = await _get_table_columns(db, table_name)
     if not columns:
         return
@@ -549,7 +569,6 @@ async def _rebuild_product_fk_table(db: aiosqlite.Connection, table_name: str) -
     await db.execute(_PRODUCT_FK_TABLE_DEFINITIONS[table_name].format(table=table_name))
     await _copy_table_rows(db, old_table, table_name, columns)
     await db.execute(f"DROP TABLE {old_table}")
-
 
 async def _migrate_product_foreign_keys(db: aiosqlite.Connection) -> None:
     """Rebuild product-related tables when legacy FK rules differ from code."""

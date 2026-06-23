@@ -340,10 +340,109 @@ async def cb_vip_info(callback: CallbackQuery, db_user: User):
 
 @router.callback_query(F.data == "vip:buy")
 async def cb_vip_buy(callback: CallbackQuery, db_user: User, state: FSMContext):
-    """Начало покупки VIP (отдельный FSM-флоу, не пересекается с обычным
-    пополнением баланса и с настройками VIP в админ-панели)."""
+    """Начало покупки VIP.
+
+    Если у пользователя достаточно средств на балансе — предлагаем купить
+    сразу с баланса (без ввода суммы и выбора способа оплаты).
+    Только если баланса не хватает — запускаем флоу пополнения.
+    """
     from services.vip_service import VIPService
 
+    settings = await VIPService.get_settings()
+    if not settings.enabled:
+        await callback.answer("VIP-доступ отключён", show_alert=True)
+        return
+
+    # Актуальный баланс пользователя
+    user = await UserService.get_by_telegram_id(db_user.telegram_id)
+    has_enough = user.balance >= settings.price
+
+    await state.clear()
+
+    if has_enough:
+        # Баланса достаточно — предлагаем купить напрямую
+        from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+        builder = InlineKeyboardBuilder()
+        builder.row(
+            InlineKeyboardButton(
+                text="✅ Купить с баланса",
+                callback_data="vip:buy_balance",
+            )
+        )
+        builder.row(
+            InlineKeyboardButton(
+                text="💳 Другой способ оплаты",
+                callback_data="vip:buy_topup",
+            )
+        )
+        builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:profile"))
+
+        await callback.message.edit_text(
+            f"⭐ <b>Покупка VIP-доступа</b>\n\n"
+            f"💰 Стоимость: {format_price(settings.price)}\n"
+            f"🎁 Скидка на все товары: {settings.discount_percent}%\n\n"
+            f"💵 Ваш баланс: {format_price(user.balance)}\n\n"
+            f"У вас достаточно средств. Купить сейчас?",
+            reply_markup=builder.as_markup(),
+            parse_mode="HTML",
+        )
+    else:
+        # Баланса не хватает — запускаем флоу пополнения
+        await state.set_state(VIPPurchaseStates.amount)
+
+        await callback.message.edit_text(
+            f"⭐ <b>Покупка VIP-доступа</b>\n\n"
+            f"💰 Стоимость: {format_price(settings.price)}\n"
+            f"🎁 Скидка на все товары: {settings.discount_percent}%\n\n"
+            f"💵 Ваш баланс: {format_price(user.balance)}\n"
+            f"❌ Недостаточно средств. Пополните баланс.\n\n"
+            f"Введите сумму пополнения (минимум {format_price(settings.price)}):",
+            reply_markup=back_kb("menu:profile"),
+            parse_mode="HTML",
+        )
+
+    await callback.answer()
+
+
+@router.callback_query(F.data == "vip:buy_balance")
+async def cb_vip_buy_balance(callback: CallbackQuery, db_user: User):
+    """Покупка VIP напрямую с баланса пользователя."""
+    from services.vip_service import VIPService
+
+    settings = await VIPService.get_settings()
+    if not settings.enabled:
+        await callback.answer("VIP-доступ отключён", show_alert=True)
+        return
+
+    user = await UserService.get_by_telegram_id(db_user.telegram_id)
+    if user.balance < settings.price:
+        # Баланс мог измениться между нажатиями — повторная проверка
+        await callback.answer("❌ Недостаточно средств на балансе", show_alert=True)
+        return
+
+    new_balance = await UserService.adjust_balance(user.id, -settings.price)
+    if new_balance is None:
+        await callback.answer("Ошибка списания средств", show_alert=True)
+        return
+
+    await VIPService.grant_vip(user.id, settings.price, "balance")
+
+    await callback.message.edit_text(
+        f"✅ <b>VIP-доступ активирован!</b>\n\n"
+        f"💰 Списано: {format_price(settings.price)}\n"
+        f"💵 Остаток на балансе: {format_price(new_balance)}\n"
+        f"🎁 Скидка на все товары: {settings.discount_percent}%",
+        reply_markup=back_kb("menu:profile"),
+        parse_mode="HTML",
+    )
+    await callback.answer("⭐ VIP активирован!")
+
+
+@router.callback_query(F.data == "vip:buy_topup")
+async def cb_vip_buy_topup(callback: CallbackQuery, state: FSMContext, db_user: User):
+    """Пользователь выбрал пополнение вместо покупки с баланса."""
+    from services.vip_service import VIPService
     settings = await VIPService.get_settings()
     if not settings.enabled:
         await callback.answer("VIP-доступ отключён", show_alert=True)
