@@ -342,8 +342,7 @@ async def cb_vip_info(callback: CallbackQuery, db_user: User):
 async def cb_vip_buy(callback: CallbackQuery, db_user: User, state: FSMContext):
     """Начало покупки VIP.
 
-    Если у пользователя достаточно средств на балансе — предлагаем купить
-    сразу с баланса (без ввода суммы и выбора способа оплаты).
+    Если у пользователя достаточно средств на балансе — покупаем сразу с баланса.
     Только если баланса не хватает — запускаем флоу пополнения.
     """
     from services.vip_service import VIPService
@@ -353,40 +352,29 @@ async def cb_vip_buy(callback: CallbackQuery, db_user: User, state: FSMContext):
         await callback.answer("VIP-доступ отключён", show_alert=True)
         return
 
-    # Актуальный баланс пользователя
     user = await UserService.get_by_telegram_id(db_user.telegram_id)
     has_enough = user.balance >= settings.price
 
     await state.clear()
 
     if has_enough:
-        # Баланса достаточно — предлагаем купить напрямую
-        from aiogram.utils.keyboard import InlineKeyboardBuilder
+        # Баланса достаточно — покупаем сразу, без промежуточного окна
+        new_balance = await UserService.adjust_balance(user.id, -settings.price)
+        if new_balance is None:
+            await callback.answer("Ошибка списания средств", show_alert=True)
+            return
 
-        builder = InlineKeyboardBuilder()
-        builder.row(
-            InlineKeyboardButton(
-                text="✅ Купить с баланса",
-                callback_data="vip:buy_balance",
-            )
-        )
-        builder.row(
-            InlineKeyboardButton(
-                text="💳 Другой способ оплаты",
-                callback_data="vip:buy_topup",
-            )
-        )
-        builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:profile"))
+        await VIPService.grant_vip(user.id, settings.price, "balance")
 
         await callback.message.edit_text(
-            f"⭐ <b>Покупка VIP-доступа</b>\n\n"
-            f"💰 Стоимость: {format_price(settings.price)}\n"
-            f"🎁 Скидка на все товары: {settings.discount_percent}%\n\n"
-            f"💵 Ваш баланс: {format_price(user.balance)}\n\n"
-            f"У вас достаточно средств. Купить сейчас?",
-            reply_markup=builder.as_markup(),
+            f"✅ <b>VIP-доступ активирован!</b>\n\n"
+            f"💰 Списано: {format_price(settings.price)}\n"
+            f"💵 Остаток на балансе: {format_price(new_balance)}\n"
+            f"🎁 Скидка на все товары: {settings.discount_percent}%",
+            reply_markup=back_kb("menu:profile"),
             parse_mode="HTML",
         )
+        await callback.answer("⭐ VIP активирован!")
     else:
         # Баланса не хватает — запускаем флоу пополнения
         await state.set_state(VIPPurchaseStates.amount)

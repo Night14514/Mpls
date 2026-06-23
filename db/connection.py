@@ -420,6 +420,14 @@ _PRODUCT_FK_EXPECTATIONS = {
         ("product_id", "products", "CASCADE"),
         ("order_id", "orders", "CASCADE"),
     ],
+    "crypto_invoices": [
+        ("user_id", "users", "NO ACTION"),
+        ("order_id", "orders", "NO ACTION"),
+    ],
+    "order_admin_actions": [
+        ("order_id", "orders", "NO ACTION"),
+        ("admin_user_id", "users", "NO ACTION"),
+    ],
 }
 
 _PRODUCT_FK_TABLE_DEFINITIONS = {
@@ -469,6 +477,31 @@ _PRODUCT_FK_TABLE_DEFINITIONS = {
             UNIQUE(user_id, product_id),
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
             FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+        )
+    """,
+    "crypto_invoices": """
+        CREATE TABLE {table} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            order_id INTEGER,
+            invoice_id TEXT UNIQUE NOT NULL,
+            amount REAL NOT NULL,
+            asset TEXT,
+            status TEXT DEFAULT 'active',
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            FOREIGN KEY (order_id) REFERENCES orders(id)
+        )
+    """,
+    "order_admin_actions": """
+        CREATE TABLE {table} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL,
+            admin_user_id INTEGER NOT NULL,
+            action TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (order_id) REFERENCES orders(id),
+            FOREIGN KEY (admin_user_id) REFERENCES users(id)
         )
     """,
 }
@@ -570,6 +603,7 @@ async def _rebuild_product_fk_table(db: aiosqlite.Connection, table_name: str) -
     await _copy_table_rows(db, old_table, table_name, columns)
     await db.execute(f"DROP TABLE {old_table}")
 
+
 async def _migrate_product_foreign_keys(db: aiosqlite.Connection) -> None:
     """Rebuild product-related tables when legacy FK rules differ from code."""
     if not await _product_foreign_keys_need_migration(db):
@@ -588,11 +622,16 @@ async def _migrate_product_foreign_keys(db: aiosqlite.Connection) -> None:
             await _rebuild_product_fk_table(db, "cart")
         if await _table_exists(db, "favorites"):
             await _rebuild_product_fk_table(db, "favorites")
+        if await _table_exists(db, "crypto_invoices"):
+            await _rebuild_product_fk_table(db, "crypto_invoices")
+            await _safe_execute(db, "CREATE INDEX IF NOT EXISTS idx_crypto_invoices_invoice_id ON crypto_invoices(invoice_id)")
+        if await _table_exists(db, "order_admin_actions"):
+            await _rebuild_product_fk_table(db, "order_admin_actions")
+            await _safe_execute(db, "CREATE INDEX IF NOT EXISTS idx_order_admin_actions_order_id ON order_admin_actions(order_id)")
     finally:
         await db.execute("PRAGMA foreign_keys = ON")
 
     logger.info("Product foreign key migration completed")
-
 
 @asynccontextmanager
 async def get_db() -> AsyncGenerator[aiosqlite.Connection, None]:
