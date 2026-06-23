@@ -85,7 +85,7 @@ async def cb_admin_panel(callback: CallbackQuery, db_user: User):
         await callback.answer("⛔ Доступ запрещён", show_alert=True)
         return
     from services.permission_service import PermissionService
-    has_hidden = PermissionService.has_hidden_access(db_user.telegram_id)
+    has_hidden = await PermissionService.has_hidden_access(db_user.telegram_id)
     await callback.message.edit_text(
         "⚙️ <b>Админ-панель</b>\n\nВыберите раздел:",
         reply_markup=admin_panel_kb(has_hidden_access=has_hidden),

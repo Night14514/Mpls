@@ -8,6 +8,7 @@ from typing import List, Optional
 from core.order_engine import STATUS_COMPLETED, STATUS_CONFIRMED
 from database import get_db
 from models import Category, Product
+from database import get_db, transaction
 
 logger = logging.getLogger(__name__)
 

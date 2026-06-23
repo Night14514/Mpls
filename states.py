@@ -43,11 +43,6 @@ class ManualPaymentStates(StatesGroup):
     tx_hash = State()
 
 
-class AdminBroadcastStates(StatesGroup):
-    """Рассылка (опционально)."""
-    message = State()
-
-
 class RegistrationStates(StatesGroup):
     """Регистрация пользователя."""
     country = State()
@@ -56,7 +51,7 @@ class RegistrationStates(StatesGroup):
 
 
 class TopUpStates(StatesGroup):
-    """Пополнение баланса."""
+    """Обычное пополнение баланса (не VIP)."""
     currency = State()
     amount = State()
     receipt = State()
@@ -95,7 +90,25 @@ class AdminReferralSettingsStates(StatesGroup):
 
 
 class AdminVIPSettingsStates(StatesGroup):
-    """Изменение настроек VIP."""
+    """Изменение настроек VIP (только в админке)."""
     price = State()
     discount = State()
     enabled = State()
+
+
+class AdminVIPGrantStates(StatesGroup):
+    """Выдача VIP пользователю администратором (поиск пользователя)."""
+    search = State()
+
+
+class VIPPurchaseStates(StatesGroup):
+    """Покупка VIP пользователем (отдельно от обычного пополнения и от
+    настроек VIP в админке, чтобы избежать конфликтов состояний)."""
+    amount = State()
+    method = State()
+
+
+class SecretAccessStates(StatesGroup):
+    """Управление секретным доступом (выдача/отзыв) в админ-панели."""
+    grant_id = State()
+    revoke_id = State()

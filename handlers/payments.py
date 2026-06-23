@@ -128,33 +128,48 @@ async def _send_crypto_invoice(
 async def cb_crypto_check(callback: CallbackQuery, db_user: User):
     """Ручная проверка статуса Crypto (дополнительно к scheduler)."""
     invoice_id = callback.data.split(":")[1]
-    
-    # Check if this is a balance topup invoice
+
+    # Убедимся, что инвойс относится к этому пользователю / существует в нашей БД.
     async with get_db() as db:
         cursor = await db.execute(
-            "SELECT payload FROM crypto_invoices WHERE invoice_id = ?",
+            "SELECT invoice_id FROM crypto_invoices WHERE invoice_id = ?",
             (invoice_id,)
         )
         row = await cursor.fetchone()
-        if row and (row["payload"] or "").startswith(("vip_", "balance_")):
-            # Handle balance topup check
-            crypto = CryptoPaymentService()
-            invoice = await crypto.get_invoice_by_id(invoice_id)
-            if invoice and invoice.get("status") == "paid":
+
+    if not row:
+        await callback.answer("Инвойс не найден", show_alert=True)
+        return
+
+    crypto = CryptoPaymentService()
+    invoice = await crypto.get_invoice_by_id(invoice_id)
+    if not invoice:
+        await callback.answer("Не удалось получить статус платежа", show_alert=True)
+        return
+
+    # payload берём из самого инвойса Crypto Bot (он же передавался при создании),
+    # а не из БД — так корректно определяем тип платежа (баланс/VIP/заказ).
+    payload = invoice.get("payload", "") or ""
+
+    if payload.startswith(("vip_", "balance_")):
+        if invoice.get("status") == "paid":
+            try:
                 await _process_crypto_balance_topup(
-                    callback.bot, 
-                    invoice_id, 
-                    db_user.id, 
-                    invoice, 
-                    row["payload"]
+                    callback.bot,
+                    invoice_id,
+                    db_user.id,
+                    invoice,
+                    payload,
                 )
                 await callback.answer("✅ Платёж подтвержден!")
-            else:
-                await callback.answer("Платёж ещё не оплачен")
+            except Exception as e:
+                logger.error("Ошибка ручной проверки крипто-пополнения %s: %s", invoice_id, e)
+                await callback.answer("✅ Платёж уже обработан")
         else:
-            await _process_crypto_payment(callback.bot, callback.from_user.id, db_user, invoice_id)
-            await callback.answer()
-
+            await callback.answer("Платёж ещё не оплачен")
+    else:
+        await _process_crypto_payment(callback.bot, callback.from_user.id, db_user, invoice_id)
+        await callback.answer()
 
 # ── Обработка Crypto платежей ─────────────────────────────────
 
@@ -322,13 +337,11 @@ async def _process_crypto_balance_topup(bot: Bot, invoice_id: str, user_id: int,
         
         # Обновляем статус в balance_topups если есть запись
         await db.execute(
-            """UPDATE balance_topups 
-               SET status = 'approved' 
-               WHERE user_id = ? AND status = 'pending' AND receipt_type = 'crypto'
-               LIMIT 1""",
-            (user_id,)
+            """UPDATE balance_topups
+               SET status = 'approved'
+               WHERE crypto_invoice_id = ? AND status = 'pending'""",
+            (invoice_id,)
         )
-    
     # Уведомляем пользователя
     user = await UserService.get_by_id(user_id)
     if user:

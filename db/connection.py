@@ -290,6 +290,26 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
 
+        CREATE TABLE IF NOT EXISTS secret_access (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id INTEGER UNIQUE NOT NULL,
+            granted_by INTEGER,
+            note TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT DEFAULT (datetime('now')),
+            revoked_by INTEGER,
+            revoked_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS admin_action_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_telegram_id INTEGER NOT NULL,
+            action TEXT NOT NULL,
+            target TEXT,
+            details TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+
         CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id);
         CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id);
         CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
@@ -299,6 +319,8 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrer_user_id);
         CREATE INDEX IF NOT EXISTS idx_referrals_status ON referrals(status);
         CREATE INDEX IF NOT EXISTS idx_referral_rewards_referrer ON referral_rewards(referrer_user_id);
+        CREATE INDEX IF NOT EXISTS idx_secret_access_telegram_id ON secret_access(telegram_id);
+        CREATE INDEX IF NOT EXISTS idx_admin_action_log_admin ON admin_action_log(admin_telegram_id);
         """
     )
     await _migrate_columns(db)
@@ -327,7 +349,10 @@ async def _migrate_columns(db: aiosqlite.Connection) -> None:
         "ALTER TABLE users ADD COLUMN vip_purchased_at TEXT",
         "ALTER TABLE users ADD COLUMN vip_expiry TEXT",
         "ALTER TABLE categories ADD COLUMN sort_order INTEGER DEFAULT 0",
-    ]
+        "ALTER TABLE categories ADD COLUMN sort_order INTEGER DEFAULT 0",
+        "ALTER TABLE balance_topups ADD COLUMN crypto_invoice_id TEXT",
+            ]
+
     for sql in migrations:
         await _safe_execute(db, sql)
 

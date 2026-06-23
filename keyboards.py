@@ -361,6 +361,32 @@ def admin_panel_kb(has_hidden_access: bool = False) -> InlineKeyboardMarkup:
     builder.row(
         InlineKeyboardButton(text="👥 Реф система", callback_data="admin:ref:menu"),
     )
+    if has_hidden_access:
+        builder.row(
+            InlineKeyboardButton(text="🔐 Секретный доступ", callback_data="admin:secret"),
+        )
+    builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:main"))
+    return builder.as_markup()
+ 
+ 
+def secret_access_kb() -> InlineKeyboardMarkup:
+    """Меню управления секретным доступом."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="➕ Выдать доступ", callback_data="admin:secret:grant"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="➖ Забрать доступ", callback_data="admin:secret:revoke"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="📋 Список", callback_data="admin:secret:list"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="🗒 Журнал действий", callback_data="admin:secret:log"),
+    )
+    builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="admin:panel"))
+    return builder.as_markup()
+
     builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:main"))
     return builder.as_markup()
  

@@ -29,6 +29,7 @@ from keyboards import (
     back_kb,
     categories_kb,
     confirm_kb,
+    secret_access_kb,
     skip_kb,
 )
 from core.order_engine import ConfirmOutcome, STATUS_COMPLETED, STATUS_CONFIRMED
@@ -47,9 +48,11 @@ from states import (
     AdminProductStates,
     AdminPromoStates,
     AdminUserStates,
+    AdminVIPGrantStates,
     AdminWalletStates,
     AdminReferralSettingsStates,
     AdminVIPSettingsStates,
+    SecretAccessStates,
 )
 from utils import encode_content_data, escape, format_price, get_product_price, safe_edit_or_send, validate_price
 
@@ -494,7 +497,7 @@ async def msg_admin_cat_name(message: Message, state: FSMContext):
 @router.callback_query(F.data == "admin:categories")
 async def cb_admin_categories(callback: CallbackQuery, db_user: User):
     from services.permission_service import PermissionService
-    has_hidden = PermissionService.has_hidden_access(db_user.telegram_id)
+    has_hidden = await PermissionService.has_hidden_access(db_user.telegram_id)
     categories = await ProductService.get_categories(include_hidden=True, trusted=True)
     await callback.message.edit_text(
         "📂 <b>Категории</b>",
@@ -502,6 +505,92 @@ async def cb_admin_categories(callback: CallbackQuery, db_user: User):
         parse_mode="HTML",
     )
     await callback.answer()
+
+
+# ── Category Reordering ──────────────────────────────────────
+
+@router.callback_query(F.data.startswith("admin:cat:"))
+async def cb_admin_category_action(callback: CallbackQuery, db_user: User):
+    """Действия с категорией."""
+    parts = callback.data.split(":")
+
+    # Handle admin:cat:ID (view category details)
+    if len(parts) == 3 and parts[2].isdigit():
+        category_id = int(parts[2])
+        category = await ProductService.get_category(category_id)
+        if not category:
+            await callback.answer("Категория не найдена", show_alert=True)
+            return
+
+        from services.permission_service import PermissionService
+        has_hidden = await PermissionService.has_hidden_access(db_user.telegram_id)
+
+        hidden = "🔒 скрытая" if category.is_hidden else "✅ видимая"
+        text = f"📂 <b>{escape(category.name)}</b>\n\n" f"ID: {category_id}\n" f"Статус: {hidden}\nПорядок: {category.sort_order}"
+        await safe_edit_or_send(
+            callback, text, reply_markup=admin_category_actions_kb(category_id, has_hidden)
+        )
+        await callback.answer()
+        return
+
+    # Handle admin:cat:action:ID
+    if len(parts) >= 4:
+        action = parts[2]
+        category_id = int(parts[3]) if parts[3].isdigit() else None
+
+        if not category_id:
+            await callback.answer("Неверный формат", show_alert=True)
+            return
+
+        from services.permission_service import PermissionService
+        has_hidden = await PermissionService.has_hidden_access(db_user.telegram_id)
+
+        # Check hidden access for reordering actions
+        if action in ["up", "down"] and not has_hidden:
+            await callback.answer("⛔ Доступ запрещён", show_alert=True)
+            return
+
+        # Validate callback server-side
+        if not await PermissionService.validate_callback(callback.data, db_user.telegram_id):
+            await callback.answer("⛔ Доступ запрещён", show_alert=True)
+            return
+
+        if action == "up":
+            success = await ProductService.move_category_up(category_id)
+            if success:
+                category = await ProductService.get_category(category_id)
+                hidden = "🔒 скрытая" if category.is_hidden else "✅ видимая"
+                text = (
+                    f"📂 <b>{escape(category.name)}</b>\n\n"
+                    f"ID: {category_id}\nСтатус: {hidden}\nПорядок: {category.sort_order}"
+                )
+                await safe_edit_or_send(
+                    callback, text, reply_markup=admin_category_actions_kb(category_id, has_hidden)
+                )
+            await callback.answer("↑ Категория перемещена вверх" if success else "Уже в начале списка")
+        elif action == "down":
+            success = await ProductService.move_category_down(category_id)
+            if success:
+                category = await ProductService.get_category(category_id)
+                hidden = "🔒 скрытая" if category.is_hidden else "✅ видимая"
+                text = (
+                    f"📂 <b>{escape(category.name)}</b>\n\n"
+                    f"ID: {category_id}\nСтатус: {hidden}\nПорядок: {category.sort_order}"
+                )
+                await safe_edit_or_send(
+                    callback, text, reply_markup=admin_category_actions_kb(category_id, has_hidden)
+                )
+            await callback.answer("↓ Категория перемещена вниз" if success else "Уже в конце списка")
+        elif action == "edit":
+            await callback.answer("Редактирование скоро будет доступно")
+        elif action == "del":
+            await callback.message.edit_text(
+                f"🗑 Удалить категорию #{category_id}?",
+                reply_markup=confirm_kb(f"admin:cat_del_yes:{category_id}", "admin:categories"),
+                parse_mode="HTML",
+            )
+            await callback.answer()
+        return
 
 
 @router.callback_query(F.data.startswith("admin:cat_del_yes:"))
@@ -1352,12 +1441,223 @@ async def cb_admin_vip_list(callback: CallbackQuery):
 @router.callback_query(F.data == "admin:vip:grant")
 async def cb_admin_vip_grant(callback: CallbackQuery, state: FSMContext):
     """Выдать VIP пользователю."""
-    await state.set_state(AdminUserStates.search)
+    await state.set_state(AdminVIPGrantStates.search)
     await safe_edit_or_send(
         callback,
         "👤 Введите <b>Telegram ID</b> или <b>@username</b> пользователя для выдачи VIP:",
         reply_markup=back_kb("admin:vip"),
     )
+    await callback.answer()
+
+
+@router.message(AdminVIPGrantStates.search)
+async def msg_admin_vip_grant_search(message: Message, state: FSMContext, db_user: User):
+    """Найти пользователя и выдать ему VIP."""
+    from services.vip_service import VIPService
+
+    users = await UserService.search_by_username_or_id(message.text.strip())
+    if not users:
+        await message.answer("❌ Пользователь не найден", reply_markup=admin_vip_kb())
+        await state.clear()
+        return
+
+    target = users[0]
+    settings = await VIPService.get_settings()
+    await VIPService.grant_vip(target.id, 0, "admin_grant", str(db_user.telegram_id))
+
+    from services.secret_access_service import SecretAccessService
+    await SecretAccessService.log_admin_action(
+        db_user.telegram_id, "vip_grant", target=str(target.telegram_id),
+    )
+
+    username = f"@{target.username}" if target.username else "—"
+    await message.answer(
+        f"✅ VIP-доступ выдан пользователю {username} (ID: <code>{target.telegram_id}</code>)\n"
+        f"🎁 Скидка: {settings.discount_percent}%",
+        reply_markup=admin_vip_kb(),
+        parse_mode="HTML",
+    )
+    await state.clear()
+
+
+# ── Секретный доступ ──────────────────────────────────────────
+
+@router.callback_query(F.data == "admin:secret")
+async def cb_admin_secret_menu(callback: CallbackQuery, db_user: User):
+    """Меню управления секретным доступом."""
+    from services.permission_service import PermissionService
+
+    if not await PermissionService.has_hidden_access(db_user.telegram_id):
+        await callback.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+
+    await safe_edit_or_send(
+        callback,
+        "🔐 <b>Секретный доступ</b>\n\n"
+        "Здесь можно выдать или забрать расширенный (скрытый) доступ "
+        "у пользователя, а также посмотреть список и журнал действий.",
+        reply_markup=secret_access_kb(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:secret:grant")
+async def cb_admin_secret_grant(callback: CallbackQuery, state: FSMContext, db_user: User):
+    """Начать выдачу секретного доступа."""
+    from services.permission_service import PermissionService
+
+    if not await PermissionService.has_hidden_access(db_user.telegram_id):
+        await callback.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+
+    await state.set_state(SecretAccessStates.grant_id)
+    await safe_edit_or_send(
+        callback,
+        "🔐 Введите <b>Telegram ID</b> пользователя, которому нужно выдать секретный доступ:",
+        reply_markup=back_kb("admin:secret"),
+    )
+    await callback.answer()
+
+
+@router.message(SecretAccessStates.grant_id)
+async def msg_admin_secret_grant(message: Message, state: FSMContext, db_user: User):
+    """Обработать ввод ID и выдать секретный доступ."""
+    from services.permission_service import PermissionService
+    from services.secret_access_service import SecretAccessService
+
+    if not await PermissionService.has_hidden_access(db_user.telegram_id):
+        await message.answer("⛔ Доступ запрещён")
+        await state.clear()
+        return
+
+    text = message.text.strip()
+    if not text.isdigit():
+        await message.answer("❌ Введите числовой Telegram ID:")
+        return
+
+    target_id = int(text)
+    try:
+        await SecretAccessService.grant(target_id, db_user.telegram_id)
+        await SecretAccessService.log_admin_action(
+            db_user.telegram_id, "secret_access_grant", target=str(target_id),
+        )
+        await message.answer(
+            f"✅ Секретный доступ выдан пользователю <code>{target_id}</code>",
+            reply_markup=secret_access_kb(),
+            parse_mode="HTML",
+        )
+    except Exception as exc:
+        logger.error("Ошибка выдачи секретного доступа: %s", exc)
+        await message.answer(f"❌ Ошибка: {exc}", reply_markup=secret_access_kb())
+    await state.clear()
+
+
+@router.callback_query(F.data == "admin:secret:revoke")
+async def cb_admin_secret_revoke(callback: CallbackQuery, state: FSMContext, db_user: User):
+    """Начать отзыв секретного доступа."""
+    from services.permission_service import PermissionService
+
+    if not await PermissionService.has_hidden_access(db_user.telegram_id):
+        await callback.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+
+    await state.set_state(SecretAccessStates.revoke_id)
+    await safe_edit_or_send(
+        callback,
+        "🔐 Введите <b>Telegram ID</b> пользователя, у которого нужно забрать секретный доступ:",
+        reply_markup=back_kb("admin:secret"),
+    )
+    await callback.answer()
+
+
+@router.message(SecretAccessStates.revoke_id)
+async def msg_admin_secret_revoke(message: Message, state: FSMContext, db_user: User):
+    """Обработать ввод ID и забрать секретный доступ."""
+    from services.permission_service import PermissionService
+    from services.secret_access_service import SecretAccessService
+
+    if not await PermissionService.has_hidden_access(db_user.telegram_id):
+        await message.answer("⛔ Доступ запрещён")
+        await state.clear()
+        return
+
+    text = message.text.strip()
+    if not text.isdigit():
+        await message.answer("❌ Введите числовой Telegram ID:")
+        return
+
+    target_id = int(text)
+    try:
+        success = await SecretAccessService.revoke(target_id, db_user.telegram_id)
+        await SecretAccessService.log_admin_action(
+            db_user.telegram_id, "secret_access_revoke", target=str(target_id),
+            details="ok" if success else "not_found",
+        )
+        if success:
+            await message.answer(
+                f"✅ Секретный доступ у пользователя <code>{target_id}</code> отозван",
+                reply_markup=secret_access_kb(),
+                parse_mode="HTML",
+            )
+        else:
+            await message.answer(
+                f"⚠️ У пользователя <code>{target_id}</code> не было активного секретного доступа",
+                reply_markup=secret_access_kb(),
+                parse_mode="HTML",
+            )
+    except Exception as exc:
+        logger.error("Ошибка отзыва секретного доступа: %s", exc)
+        await message.answer(f"❌ Ошибка: {exc}", reply_markup=secret_access_kb())
+    await state.clear()
+
+
+@router.callback_query(F.data == "admin:secret:list")
+async def cb_admin_secret_list(callback: CallbackQuery, db_user: User):
+    """Список пользователей с секретным доступом."""
+    from services.permission_service import PermissionService
+    from services.secret_access_service import SecretAccessService
+
+    if not await PermissionService.has_hidden_access(db_user.telegram_id):
+        await callback.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+
+    entries = await SecretAccessService.list_active()
+    if not entries:
+        text = "🔐 <b>Секретный доступ</b>\n\nСейчас ни у кого нет секретного доступа."
+    else:
+        lines = []
+        for e in entries[:50]:
+            lines.append(
+                f"👤 ID: <code>{e['telegram_id']}</code>\n"
+                f"   Выдал: {e['granted_by'] or '—'}\n"
+                f"   Дата: {e['created_at']}"
+            )
+        text = "🔐 <b>Пользователи с секретным доступом</b>\n\n" + "\n\n".join(lines)
+    await safe_edit_or_send(callback, text, reply_markup=secret_access_kb())
+    await callback.answer()
+@router.callback_query(F.data == "admin:secret:log")
+async def cb_admin_secret_log(callback: CallbackQuery, db_user: User):
+    """Журнал действий администраторов по секретному доступу."""
+    from services.permission_service import PermissionService
+    from services.secret_access_service import SecretAccessService
+
+    if not await PermissionService.has_hidden_access(db_user.telegram_id):
+        await callback.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+
+    entries = await SecretAccessService.get_action_log(limit=20)
+    if not entries:
+        text = "📋 <b>Журнал действий</b>\n\nПока нет записей."
+    else:
+        lines = []
+        for e in entries:
+            lines.append(
+                f"🕒 {e['created_at']}\n"
+                f"👤 Админ: <code>{e['admin_telegram_id']}</code>\n"
+                f"⚙️ {escape(e['action'])} → {escape(e['target'] or '—')}"
+            )
+        text = "📋 <b>Журнал действий администраторов</b>\n\n" + "\n\n".join(lines)
+    await safe_edit_or_send(callback, text, reply_markup=secret_access_kb())
     await callback.answer()
 
 
