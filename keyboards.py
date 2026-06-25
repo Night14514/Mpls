@@ -2,7 +2,7 @@
 Inline-клавиатуры бота. 
 """ 
  
-from typing import List, Optional 
+from typing import Dict, List, Optional 
  
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup 
 from aiogram.utils.keyboard import InlineKeyboardBuilder 
@@ -17,7 +17,7 @@ from core.order_engine import (
 ) 
 from data.countries import COUNTRIES, POPULAR_CITIES 
 from config import get_settings 
-from models import Category, Order, Product, PromoCode, Wallet 
+from models import Category, Order, Product, PromoCode, Subcategory, Wallet 
  
  
 ORDER_STATUS_LABELS = { 
@@ -130,6 +130,14 @@ def insufficient_balance_kb() -> InlineKeyboardMarkup:
     return builder.as_markup() 
  
  
+def captcha_kb() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="🔄 Обновить CAPTCHA", callback_data="reg:captcha_refresh"),
+    )
+    return builder.as_markup()
+
+
 def countries_kb() -> InlineKeyboardMarkup: 
     """Выбор страны при регистрации.""" 
     builder = InlineKeyboardBuilder() 
@@ -165,8 +173,34 @@ def categories_kb(categories: List[Category], prefix: str = "cat") -> InlineKeyb
     return builder.as_markup() 
  
  
-def products_kb( 
-    products: List[Product], category_id: int, page: int = 0, per_page: int = 5 
+def subcategories_kb(
+    subcategories: List[Subcategory], category_id: int, prefix: str = "subcat"
+) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for sub in subcategories:
+        builder.row(
+            InlineKeyboardButton(
+                text=f"📁 {sub.name}",
+                callback_data=f"{prefix}:{sub.id}",
+            )
+        )
+    builder.row(
+        InlineKeyboardButton(
+            text="📦 Все товары категории",
+            callback_data=f"cat_direct:{category_id}",
+        )
+    )
+    builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:market"))
+    return builder.as_markup()
+
+
+def products_kb(
+    products: List[Product],
+    category_id: int,
+    page: int = 0,
+    per_page: int = 5,
+    subcategory_id: Optional[int] = None,
+    back_callback: str = "menu:market",
 ) -> InlineKeyboardMarkup: 
     """Список товаров с пагинацией.""" 
     builder = InlineKeyboardBuilder() 
@@ -182,19 +216,27 @@ def products_kb(
             ) 
         ) 
  
-    nav = [] 
-    if page > 0: 
-        nav.append( 
-            InlineKeyboardButton(text="◀️", callback_data=f"products_page:{category_id}:{page - 1}") 
-        ) 
-    if start + per_page < len(products): 
-        nav.append( 
-            InlineKeyboardButton(text="▶️", callback_data=f"products_page:{category_id}:{page + 1}") 
-        ) 
-    if nav: 
-        builder.row(*nav) 
- 
-    builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:market")) 
+    nav = []
+    page_prefix = f"products_page:{category_id}:{page}"
+    if subcategory_id is not None:
+        page_prefix = f"subproducts_page:{subcategory_id}:{page}"
+    if page > 0:
+        nav.append(
+            InlineKeyboardButton(text="◀️", callback_data=f"{page_prefix.rsplit(':', 1)[0]}:{page - 1}")
+        )
+    if start + per_page < len(products):
+        nav.append(
+            InlineKeyboardButton(text="▶️", callback_data=f"{page_prefix.rsplit(':', 1)[0]}:{page + 1}")
+        )
+    if nav:
+        builder.row(*nav)
+
+    if subcategory_id is not None:
+        builder.row(
+            InlineKeyboardButton(text="⬅️ Назад", callback_data=f"subcat_back:{category_id}")
+        )
+    else:
+        builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data=back_callback))
     return builder.as_markup() 
  
  
@@ -332,35 +374,65 @@ def admin_product_content_video_kb() -> InlineKeyboardMarkup:
     return builder.as_markup()
  
  
-def admin_panel_kb(has_hidden_access: bool = False) -> InlineKeyboardMarkup:
-    """Админ-панель."""
+def admin_panel_kb(
+    has_hidden_access: bool = False,
+    permissions: Optional[Dict[str, bool]] = None,
+) -> InlineKeyboardMarkup:
+    """Админ-панель с учётом прав."""
+    perms = permissions or {}
+
+    def visible(key: str) -> bool:
+        return perms.get(key, True)
+
     builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(text="📦 Товары", callback_data="admin:products"),
-        InlineKeyboardButton(text="📂 Категории", callback_data="admin:categories"),
-    )
-    builder.row(
-        InlineKeyboardButton(text="💰 Баланс", callback_data="admin:balance"),
-        InlineKeyboardButton(text="🎁 Промокоды", callback_data="admin:promos"),
-    )
-    builder.row(
-        InlineKeyboardButton(text="📊 Статистика", callback_data="admin:stats"),
-        InlineKeyboardButton(text="👤 Пользователи", callback_data="admin:users"),
-    )
-    builder.row(
-        InlineKeyboardButton(text="💳 Пополнения", callback_data="admin:topups"),
-        InlineKeyboardButton(text="💼 Кошельки", callback_data="admin:wallets"),
-    )
-    builder.row(
-        InlineKeyboardButton(text="⭐ VIP", callback_data="admin:vip"),
-        InlineKeyboardButton(text="💎 Crypto", callback_data="admin:crypto"),
-    )
-    builder.row(
-        InlineKeyboardButton(text="⚙️ Настройки", callback_data="admin:settings"),
-    )
-    builder.row(
-        InlineKeyboardButton(text="👥 Реф система", callback_data="admin:ref:menu"),
-    )
+    row = []
+    if visible("admin:products"):
+        row.append(InlineKeyboardButton(text="📦 Товары", callback_data="admin:products"))
+    if visible("admin:categories"):
+        row.append(InlineKeyboardButton(text="📂 Категории", callback_data="admin:categories"))
+    if row:
+        builder.row(*row)
+
+    row = []
+    if visible("admin:balance"):
+        row.append(InlineKeyboardButton(text="💰 Баланс", callback_data="admin:balance"))
+    if visible("admin:promos"):
+        row.append(InlineKeyboardButton(text="🎁 Промокоды", callback_data="admin:promos"))
+    if row:
+        builder.row(*row)
+
+    row = []
+    if visible("admin:stats"):
+        row.append(InlineKeyboardButton(text="📊 Статистика", callback_data="admin:stats"))
+    if visible("admin:users"):
+        row.append(InlineKeyboardButton(text="👤 Пользователи", callback_data="admin:users"))
+    if row:
+        builder.row(*row)
+
+    row = []
+    if visible("admin:topups"):
+        row.append(InlineKeyboardButton(text="💳 Пополнения", callback_data="admin:topups"))
+    if visible("admin:wallets"):
+        row.append(InlineKeyboardButton(text="💼 Кошельки", callback_data="admin:wallets"))
+    if row:
+        builder.row(*row)
+
+    row = []
+    if visible("admin:vip"):
+        row.append(InlineKeyboardButton(text="⭐ VIP", callback_data="admin:vip"))
+    if visible("admin:crypto"):
+        row.append(InlineKeyboardButton(text="💎 Crypto", callback_data="admin:crypto"))
+    if row:
+        builder.row(*row)
+
+    if visible("admin:settings"):
+        builder.row(
+            InlineKeyboardButton(text="⚙️ Настройки", callback_data="admin:settings"),
+        )
+    if visible("admin:ref:menu"):
+        builder.row(
+            InlineKeyboardButton(text="👥 Реф система", callback_data="admin:ref:menu"),
+        )
     if has_hidden_access:
         builder.row(
             InlineKeyboardButton(text="🔐 Секретный доступ", callback_data="admin:secret"),
@@ -372,6 +444,12 @@ def admin_panel_kb(has_hidden_access: bool = False) -> InlineKeyboardMarkup:
 def secret_access_kb() -> InlineKeyboardMarkup:
     """Меню управления секретным доступом."""
     builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(
+            text="🔑 Управление полномочиями",
+            callback_data="admin:secret:permissions",
+        ),
+    )
     builder.row(
         InlineKeyboardButton(text="➕ Выдать доступ", callback_data="admin:secret:grant"),
     )
@@ -387,7 +465,55 @@ def secret_access_kb() -> InlineKeyboardMarkup:
     builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="admin:panel"))
     return builder.as_markup()
 
-    builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:main"))
+
+def admin_permissions_kb(permissions: Dict[str, bool], page: int = 0, per_page: int = 8):
+    """Список прав админ-панели с переключателями."""
+    from services.permission_service import ADMIN_PERMISSION_DEFINITIONS
+
+    builder = InlineKeyboardBuilder()
+    items = list(ADMIN_PERMISSION_DEFINITIONS)
+    start = page * per_page
+    chunk = items[start : start + per_page]
+
+    for key, label in chunk:
+        visible = permissions.get(key, True)
+        status = "✅" if visible else "❌"
+        builder.row(
+            InlineKeyboardButton(
+                text=f"{status} {label}",
+                callback_data=f"admin:perm_toggle:{key}",
+            )
+        )
+
+    nav = []
+    if page > 0:
+        nav.append(
+            InlineKeyboardButton(text="◀️", callback_data=f"admin:perm_page:{page - 1}")
+        )
+    if start + per_page < len(items):
+        nav.append(
+            InlineKeyboardButton(text="▶️", callback_data=f"admin:perm_page:{page + 1}")
+        )
+    if nav:
+        builder.row(*nav)
+
+    builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="admin:secret"))
+    return builder.as_markup()
+
+
+def vip_plans_kb() -> InlineKeyboardMarkup:
+    """Тарифы VIP-подписки."""
+    from services.vip_service import VIPService
+
+    builder = InlineKeyboardBuilder()
+    for plan in VIPService.get_plans():
+        builder.row(
+            InlineKeyboardButton(
+                text=f"{plan.label} — {plan.price:g} ₽",
+                callback_data=f"vip:plan:{plan.key}",
+            )
+        )
+    builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="menu:profile"))
     return builder.as_markup()
  
  
@@ -500,6 +626,12 @@ def admin_category_actions_kb(category_id: int, has_hidden_access: bool = False)
     """Действия с категорией."""
     builder = InlineKeyboardBuilder()
     builder.row(
+        InlineKeyboardButton(
+            text="📁 Подкатегории",
+            callback_data=f"admin:subcats:{category_id}",
+        ),
+    )
+    builder.row(
         InlineKeyboardButton(text="✏️ Название", callback_data=f"admin:cat:edit:{category_id}"),
     )
     if has_hidden_access:
@@ -511,6 +643,60 @@ def admin_category_actions_kb(category_id: int, has_hidden_access: bool = False)
         InlineKeyboardButton(text="🗑 Удалить", callback_data=f"admin:cat:del:{category_id}"),
     )
     builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="admin:categories"))
+    return builder.as_markup()
+
+
+def admin_subcategories_kb(subcategories, category_id: int, has_hidden_access: bool = False):
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(
+            text="➕ Создать подкатегорию",
+            callback_data=f"admin:subcat_add:{category_id}",
+        )
+    )
+    for sub in subcategories:
+        builder.row(
+            InlineKeyboardButton(
+                text=f"📁 {sub.name}",
+                callback_data=f"admin:subcat:{sub.id}",
+            )
+        )
+    builder.row(
+        InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:cat:{category_id}")
+    )
+    return builder.as_markup()
+
+
+def admin_subcategory_actions_kb(
+    subcategory_id: int, category_id: int, has_hidden_access: bool = False
+):
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(
+            text="✏️ Изменить",
+            callback_data=f"admin:subcat:edit:{subcategory_id}",
+        ),
+    )
+    if has_hidden_access:
+        builder.row(
+            InlineKeyboardButton(
+                text="⬆️ Вверх",
+                callback_data=f"admin:subcat:up:{subcategory_id}",
+            ),
+            InlineKeyboardButton(
+                text="⬇️ Вниз",
+                callback_data=f"admin:subcat:down:{subcategory_id}",
+            ),
+        )
+    builder.row(
+        InlineKeyboardButton(
+            text="🗑 Удалить",
+            callback_data=f"admin:subcat:del:{subcategory_id}",
+        ),
+    )
+    builder.row(
+        InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:subcats:{category_id}")
+    )
     return builder.as_markup()
 
 

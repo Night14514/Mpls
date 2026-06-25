@@ -113,11 +113,13 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
             price_rub REAL,
             photo TEXT,
             category_id INTEGER,
+            subcategory_id INTEGER,
             is_hidden INTEGER DEFAULT 0,
             is_active INTEGER DEFAULT 1,
             content_data TEXT,
             created_at TEXT DEFAULT (datetime('now')),
-            FOREIGN KEY (category_id) REFERENCES categories(id)
+            FOREIGN KEY (category_id) REFERENCES categories(id),
+            FOREIGN KEY (subcategory_id) REFERENCES subcategories(id) ON DELETE SET NULL
         );
 
         CREATE TABLE IF NOT EXISTS cart (
@@ -310,6 +312,21 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
             created_at TEXT DEFAULT (datetime('now'))
         );
 
+        CREATE TABLE IF NOT EXISTS admin_permissions (
+            permission_key TEXT PRIMARY KEY,
+            visible_to_admins INTEGER NOT NULL DEFAULT 1,
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS subcategories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            is_hidden INTEGER DEFAULT 0,
+            sort_order INTEGER DEFAULT 0,
+            FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE
+        );
+
         CREATE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id);
         CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id);
         CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
@@ -321,6 +338,7 @@ async def _create_tables(db: aiosqlite.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_referral_rewards_referrer ON referral_rewards(referrer_user_id);
         CREATE INDEX IF NOT EXISTS idx_secret_access_telegram_id ON secret_access(telegram_id);
         CREATE INDEX IF NOT EXISTS idx_admin_action_log_admin ON admin_action_log(admin_telegram_id);
+        CREATE INDEX IF NOT EXISTS idx_subcategories_category_id ON subcategories(category_id);
         """
     )
     await _migrate_columns(db)
@@ -351,7 +369,9 @@ async def _migrate_columns(db: aiosqlite.Connection) -> None:
         "ALTER TABLE categories ADD COLUMN sort_order INTEGER DEFAULT 0",
         "ALTER TABLE categories ADD COLUMN sort_order INTEGER DEFAULT 0",
         "ALTER TABLE balance_topups ADD COLUMN crypto_invoice_id TEXT",
-            ]
+        "ALTER TABLE users ADD COLUMN vip_plan TEXT",
+        "ALTER TABLE products ADD COLUMN subcategory_id INTEGER",
+    ]
 
     for sql in migrations:
         await _safe_execute(db, sql)
@@ -396,9 +416,64 @@ async def _migrate_columns(db: aiosqlite.Connection) -> None:
         """
     )
 
-async def _safe_execute(db: aiosqlite.Connection, sql: str) -> None:
+    await _migrate_vip_subscriptions(db)
+    await _seed_admin_permissions(db)
+    await _migrate_subcategories(db)
+
+async def _migrate_vip_subscriptions(db: aiosqlite.Connection) -> None:
+    """Перевести бессрочных VIP на подписку с годовым сроком."""
+    await _safe_execute(
+        db,
+        """
+        UPDATE users
+        SET vip_expiry = datetime('now', '+1 year'),
+            vip_plan = COALESCE(vip_plan, 'legacy')
+        WHERE is_vip = 1 AND (vip_expiry IS NULL OR vip_expiry = '')
+        """,
+    )
+
+
+async def _seed_admin_permissions(db: aiosqlite.Connection) -> None:
+    """Заполнить таблицу прав админ-панели (только отсутствующие ключи)."""
+    from services.permission_service import PermissionService
+
+    for key in PermissionService.all_permission_keys():
+        await _safe_execute(
+            db,
+            "INSERT OR IGNORE INTO admin_permissions (permission_key, visible_to_admins) VALUES (?, 1)",
+            key,
+        )
+
+
+async def _migrate_subcategories(db: aiosqlite.Connection) -> None:
+    """Создать таблицу подкатегорий и колонку subcategory_id для существующих БД."""
+    await _safe_execute(
+        db,
+        """
+        CREATE TABLE IF NOT EXISTS subcategories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            is_hidden INTEGER DEFAULT 0,
+            sort_order INTEGER DEFAULT 0,
+            FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE
+        )
+        """,
+    )
+    await _safe_execute(
+        db,
+        "CREATE INDEX IF NOT EXISTS idx_subcategories_category_id ON subcategories(category_id)",
+    )
+    await _safe_execute(
+        db,
+        "CREATE INDEX IF NOT EXISTS idx_products_subcategory_id ON products(subcategory_id)",
+    )
+    await _safe_execute(db, "ALTER TABLE products ADD COLUMN subcategory_id INTEGER")
+
+
+async def _safe_execute(db: aiosqlite.Connection, sql: str, params: tuple = ()) -> None:
     try:
-        await db.execute(sql)
+        await db.execute(sql, params)
     except Exception as exc:
         logger.debug("Ignored migration statement %r: %s", sql, exc)
 
@@ -428,7 +503,18 @@ _PRODUCT_FK_EXPECTATIONS = {
         ("order_id", "orders", "NO ACTION"),
         ("admin_user_id", "users", "NO ACTION"),
     ],
+    "payments": [
+        ("user_id", "users", "NO ACTION"),
+        ("order_id", "orders", "NO ACTION"),
+    ],
 }
+
+_ORDER_DEPENDENT_TABLES = (
+    "order_items",
+    "crypto_invoices",
+    "order_admin_actions",
+    "payments",
+)
 
 _PRODUCT_FK_TABLE_DEFINITIONS = {
     "orders": """
@@ -504,6 +590,21 @@ _PRODUCT_FK_TABLE_DEFINITIONS = {
             FOREIGN KEY (admin_user_id) REFERENCES users(id)
         )
     """,
+    "payments": """
+        CREATE TABLE {table} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            order_id INTEGER,
+            provider TEXT NOT NULL,
+            provider_payment_id TEXT,
+            amount REAL NOT NULL,
+            currency TEXT,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            FOREIGN KEY (order_id) REFERENCES orders(id)
+        )
+    """,
 }
 
 
@@ -536,25 +637,107 @@ def _normalize_on_delete(rule: str) -> str:
     return normalized
 
 
+def _foreign_key_rule_matches(
+    actual_rules: dict[tuple[str, str], str],
+    column: str,
+    ref_table: str,
+    expected_on_delete: str,
+) -> bool:
+    """Проверить, что FK колонки указывает на правильную таблицу с нужным ON DELETE."""
+    for (from_col, to_table), on_delete in actual_rules.items():
+        if from_col != column:
+            continue
+        if to_table.endswith("_fk_old") or to_table != ref_table:
+            return False
+        actual = _normalize_on_delete(on_delete)
+        expected = _normalize_on_delete(expected_on_delete)
+        return actual == expected
+    return False
+
+
+async def _has_broken_foreign_key_references(db: aiosqlite.Connection) -> bool:
+    """Обнаружить FK на несуществующие или временные *_fk_old таблицы."""
+    cursor = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'"
+    )
+    existing_tables = {row["name"] for row in await cursor.fetchall()}
+
+    cursor = await db.execute(
+        """
+        SELECT name FROM sqlite_master
+        WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+        ORDER BY name
+        """
+    )
+    for row in await cursor.fetchall():
+        table_name = row["name"]
+        fk_cursor = await db.execute(f"PRAGMA foreign_key_list({table_name})")
+        for fk in await fk_cursor.fetchall():
+            ref_table = fk["table"]
+            if ref_table.endswith("_fk_old") or ref_table not in existing_tables:
+                logger.warning(
+                    "Broken FK: %s.%s -> %s",
+                    table_name,
+                    fk["from"],
+                    ref_table,
+                )
+                return True
+
+    cursor = await db.execute(
+        "SELECT 1 FROM sqlite_master WHERE sql LIKE '%_fk_old%' LIMIT 1"
+    )
+    return await cursor.fetchone() is not None
+
+
 async def _product_foreign_keys_need_migration(db: aiosqlite.Connection) -> bool:
     for table_name, expected_rules in _PRODUCT_FK_EXPECTATIONS.items():
         if not await _table_exists(db, table_name):
             continue
         actual_rules = await _get_foreign_key_rules(db, table_name)
         for column, ref_table, expected_on_delete in expected_rules:
-            actual = _normalize_on_delete(actual_rules.get((column, ref_table), "NO ACTION"))
-            expected = _normalize_on_delete(expected_on_delete)
-            if actual != expected:
+            if not _foreign_key_rule_matches(
+                actual_rules, column, ref_table, expected_on_delete
+            ):
                 logger.info(
-                    "Product FK migration required for %s.%s -> %s (%s != %s)",
+                    "Product FK migration required for %s.%s -> %s",
                     table_name,
                     column,
                     ref_table,
-                    actual,
-                    expected,
                 )
                 return True
     return False
+
+
+async def _rebuild_product_fk_table_if_needed(
+    db: aiosqlite.Connection, table_name: str, force: bool = False
+) -> None:
+    """Пересоздать таблицу только если FK не соответствует ожиданиям или force=True."""
+    if table_name not in _PRODUCT_FK_TABLE_DEFINITIONS:
+        return
+    if not await _table_exists(db, table_name):
+        return
+
+    if not force:
+        expected_rules = _PRODUCT_FK_EXPECTATIONS.get(table_name, [])
+        actual_rules = await _get_foreign_key_rules(db, table_name)
+        needs_rebuild = False
+        for column, ref_table, expected_on_delete in expected_rules:
+            if not _foreign_key_rule_matches(
+                actual_rules, column, ref_table, expected_on_delete
+            ):
+                needs_rebuild = True
+                break
+        if not needs_rebuild:
+            # Проверить битые ссылки даже при совпадении ON DELETE
+            fk_cursor = await db.execute(f"PRAGMA foreign_key_list({table_name})")
+            for fk in await fk_cursor.fetchall():
+                if fk["table"].endswith("_fk_old"):
+                    needs_rebuild = True
+                    break
+        if not needs_rebuild:
+            return
+
+    await _rebuild_product_fk_table(db, table_name)
 
 
 async def _copy_table_rows(
@@ -606,30 +789,64 @@ async def _rebuild_product_fk_table(db: aiosqlite.Connection, table_name: str) -
 
 async def _migrate_product_foreign_keys(db: aiosqlite.Connection) -> None:
     """Rebuild product-related tables when legacy FK rules differ from code."""
-    if not await _product_foreign_keys_need_migration(db):
+    needs_migration = await _product_foreign_keys_need_migration(db)
+    has_broken_fks = await _has_broken_foreign_key_references(db)
+    if not needs_migration and not has_broken_fks:
         return
 
-    logger.info("Running product foreign key migration")
+    logger.info(
+        "Running product foreign key migration (needs=%s, broken=%s)",
+        needs_migration,
+        has_broken_fks,
+    )
+    force = has_broken_fks
     await db.execute("PRAGMA foreign_keys = OFF")
     try:
+        # Таблицы без зависимости от orders
+        for table_name in ("cart", "favorites"):
+            await _rebuild_product_fk_table_if_needed(db, table_name, force=force)
+
+        # orders пересоздаётся до зависимых таблиц
         if await _table_exists(db, "orders"):
-            await _rebuild_product_fk_table(db, "orders")
-            await _safe_execute(db, "CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id)")
-            await _safe_execute(db, "CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)")
-        if await _table_exists(db, "order_items"):
-            await _rebuild_product_fk_table(db, "order_items")
-        if await _table_exists(db, "cart"):
-            await _rebuild_product_fk_table(db, "cart")
-        if await _table_exists(db, "favorites"):
-            await _rebuild_product_fk_table(db, "favorites")
-        if await _table_exists(db, "crypto_invoices"):
-            await _rebuild_product_fk_table(db, "crypto_invoices")
-            await _safe_execute(db, "CREATE INDEX IF NOT EXISTS idx_crypto_invoices_invoice_id ON crypto_invoices(invoice_id)")
-        if await _table_exists(db, "order_admin_actions"):
-            await _rebuild_product_fk_table(db, "order_admin_actions")
-            await _safe_execute(db, "CREATE INDEX IF NOT EXISTS idx_order_admin_actions_order_id ON order_admin_actions(order_id)")
+            await _rebuild_product_fk_table_if_needed(db, "orders", force=force)
+            await _safe_execute(
+                db, "CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id)"
+            )
+            await _safe_execute(
+                db, "CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)"
+            )
+
+        # Зависимые от orders — только после актуальной таблицы orders
+        for table_name in _ORDER_DEPENDENT_TABLES:
+            await _rebuild_product_fk_table_if_needed(db, table_name, force=force)
+            if table_name == "crypto_invoices":
+                await _safe_execute(
+                    db,
+                    "CREATE INDEX IF NOT EXISTS idx_crypto_invoices_invoice_id "
+                    "ON crypto_invoices(invoice_id)",
+                )
+            elif table_name == "order_admin_actions":
+                await _safe_execute(
+                    db,
+                    "CREATE INDEX IF NOT EXISTS idx_order_admin_actions_order_id "
+                    "ON order_admin_actions(order_id)",
+                )
+            elif table_name == "payments":
+                await _safe_execute(
+                    db,
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_provider_unique
+                    ON payments(provider, provider_payment_id)
+                    WHERE provider_payment_id IS NOT NULL
+                    """,
+                )
     finally:
         await db.execute("PRAGMA foreign_keys = ON")
+
+    if await _has_broken_foreign_key_references(db):
+        raise RuntimeError(
+            "Product foreign key migration completed but broken FK references remain"
+        )
 
     logger.info("Product foreign key migration completed")
 

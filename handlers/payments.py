@@ -307,6 +307,9 @@ async def _process_crypto_balance_topup(bot: Bot, invoice_id: str, user_id: int,
     rub_amount = round(crypto_amount * settings.CRYPTO_USDT_RATE, 2)
     
     is_vip_purchase = payload.startswith("vip_")
+    plan_key = "1m"
+    if is_vip_purchase and ":" in payload:
+        plan_key = payload.split(":", 1)[1]
     
     async with get_db() as db:
         # Проверяем idempotency
@@ -333,7 +336,9 @@ async def _process_crypto_balance_topup(bot: Bot, invoice_id: str, user_id: int,
         
         # Если это покупка VIP, выдаём VIP
         if is_vip_purchase:
-            await VIPService.grant_vip(user_id, rub_amount, "crypto", invoice_id)
+            await VIPService.grant_vip(
+                user_id, rub_amount, "crypto", invoice_id, plan_key=plan_key
+            )
         
         # Обновляем статус в balance_topups если есть запись
         await db.execute(

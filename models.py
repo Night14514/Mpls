@@ -24,6 +24,7 @@ class User:
     is_vip: bool = False
     vip_purchased_at: Optional[str] = None
     vip_expiry: Optional[str] = None
+    vip_plan: Optional[str] = None
 
 
 @dataclass
@@ -51,6 +52,16 @@ class BalanceTopup:
 
 
 @dataclass
+class Subcategory:
+    """Подкатегория товаров."""
+    id: int
+    category_id: int
+    name: str
+    is_hidden: bool = False
+    sort_order: int = 0
+
+
+@dataclass
 class Category:
     """Категория товаров."""
     id: int
@@ -70,6 +81,7 @@ class Product:
     price_rub: Optional[float] = None
     photo: Optional[str] = None
     category_id: Optional[int] = None
+    subcategory_id: Optional[int] = None
     is_hidden: bool = False
     is_active: bool = True
     content_data: Optional[str] = None
@@ -184,6 +196,15 @@ class ReferralSettings:
     threshold: int
     reward_amount: float
     updated_at: str = ""
+
+
+@dataclass
+class VIPPlan:
+    """Тариф VIP-подписки."""
+    key: str
+    label: str
+    price: float
+    days: int
 
 
 @dataclass

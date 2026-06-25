@@ -24,6 +24,13 @@ class AdminCategoryStates(StatesGroup):
     is_hidden = State()
 
 
+class AdminSubcategoryStates(StatesGroup):
+    """Добавление/редактирование подкатегории."""
+    category_id = State()
+    name = State()
+    is_hidden = State()
+
+
 class AdminWalletStates(StatesGroup):
     """Управление кошельками."""
     currency = State()
@@ -45,6 +52,7 @@ class ManualPaymentStates(StatesGroup):
 
 class RegistrationStates(StatesGroup):
     """Регистрация пользователя."""
+    captcha = State()
     country = State()
     city = State()
     city_manual = State()
@@ -104,6 +112,7 @@ class AdminVIPGrantStates(StatesGroup):
 class VIPPurchaseStates(StatesGroup):
     """Покупка VIP пользователем (отдельно от обычного пополнения и от
     настроек VIP в админке, чтобы избежать конфликтов состояний)."""
+    plan = State()
     amount = State()
     method = State()
 

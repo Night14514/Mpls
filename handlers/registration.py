@@ -1,17 +1,22 @@
 """
-Регистрация пользователя: страна → зона → город.
+Регистрация пользователя: CAPTCHA → страна → зона → город.
 """
 
 import logging
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from config import get_settings
 from data.countries import COUNTRIES, ZONE_DESCRIPTION
-from keyboards import cities_kb, countries_kb, main_menu_kb
+from keyboards import captcha_kb, cities_kb, countries_kb, main_menu_kb
 from models import User
+from services.captcha_service import (
+    CAPTCHA_MAX_ATTEMPTS,
+    new_captcha,
+    verify_captcha,
+)
 from services.referral_service import ReferralService
 from services.user_service import UserService
 from states import RegistrationStates
@@ -20,15 +25,76 @@ logger = logging.getLogger(__name__)
 router = Router(name="registration")
 
 
-async def start_registration(message: Message, state: FSMContext) -> None:
-    """Начать процесс регистрации."""
-    await state.set_state(RegistrationStates.country)
-    await message.answer(
-        "👋 <b>Добро пожаловать!</b>\n\n"
-        "Для начала работы пройдите короткую регистрацию.\n\n"
-        "🌍 Выберите вашу страну:",
-        reply_markup=countries_kb(),
+async def _send_captcha(message: Message, state: FSMContext) -> None:
+    code, image_bytes = new_captcha()
+    await state.update_data(captcha_code=code, captcha_attempts=0)
+    await state.set_state(RegistrationStates.captcha)
+    await message.answer_photo(
+        photo=BufferedInputFile(image_bytes, filename="captcha.png"),
+        caption=(
+            "🛡 <b>Проверка безопасности</b>\n\n"
+            "Введите символы с изображения (буквы и цифры).\n"
+            f"Попыток: {CAPTCHA_MAX_ATTEMPTS}"
+        ),
+        reply_markup=captcha_kb(),
         parse_mode="HTML",
+    )
+
+
+async def start_registration(message: Message, state: FSMContext) -> None:
+    """Начать процесс регистрации с CAPTCHA."""
+    await _send_captcha(message, state)
+
+
+@router.callback_query(F.data == "reg:captcha_refresh")
+async def cb_reg_captcha_refresh(callback: CallbackQuery, state: FSMContext):
+    code, image_bytes = new_captcha()
+    await state.update_data(captcha_code=code, captcha_attempts=0)
+    await callback.message.delete()
+    await callback.message.answer_photo(
+        photo=BufferedInputFile(image_bytes, filename="captcha.png"),
+        caption=(
+            "🛡 <b>Новая CAPTCHA</b>\n\n"
+            "Введите символы с изображения.\n"
+            f"Попыток: {CAPTCHA_MAX_ATTEMPTS}"
+        ),
+        reply_markup=captcha_kb(),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.message(RegistrationStates.captcha)
+async def msg_reg_captcha(message: Message, state: FSMContext):
+    data = await state.get_data()
+    expected = data.get("captcha_code", "")
+    attempts = int(data.get("captcha_attempts", 0)) + 1
+
+    if verify_captcha(message.text or "", expected):
+        await state.set_state(RegistrationStates.country)
+        await message.answer(
+            "✅ Проверка пройдена!\n\n"
+            "👋 <b>Добро пожаловать!</b>\n\n"
+            "Для начала работы пройдите короткую регистрацию.\n\n"
+            "🌍 Выберите вашу страну:",
+            reply_markup=countries_kb(),
+            parse_mode="HTML",
+        )
+        return
+
+    if attempts >= CAPTCHA_MAX_ATTEMPTS:
+        await message.answer(
+            "❌ Превышено число попыток. Генерируем новую CAPTCHA..."
+        )
+        await _send_captcha(message, state)
+        return
+
+    await state.update_data(captcha_attempts=attempts)
+    remaining = CAPTCHA_MAX_ATTEMPTS - attempts
+    await message.answer(
+        f"❌ Неверный код. Осталось попыток: {remaining}\n"
+        "Попробуйте снова или обновите изображение.",
+        reply_markup=captcha_kb(),
     )
 
 
@@ -116,8 +182,6 @@ async def _finish_registration(
         await message.answer(text, reply_markup=main_menu_kb(db_user.is_admin), parse_mode="HTML")
 
     user = updated_user or db_user
-    # Засчёт реферала (если пользователь пришёл по реферальной ссылке) —
-    # не должен ломать завершение регистрации при любой ошибке.
     referral_result = None
     try:
         referral_result = await ReferralService.confirm_referral(user.id)
@@ -175,12 +239,7 @@ async def _notify_referrer(bot, referral_result) -> None:
 
 
 async def _notify_admins_new_user(bot, user: User, country: str, city: str, referral_result) -> None:
-    """Уведомить администраторов о каждом новом зарегистрированном пользователе.
-
-    Отправка каждому админу изолирована try/except: сбой одной отправки
-    не должен влиять на остальные и не должен ломать регистрацию (этот метод
-    вызывается уже после того, как пользователю показано главное меню).
-    """
+    """Уведомить администраторов о каждом новом зарегистрированном пользователе."""
     settings = get_settings()
     username = f"@{user.username}" if user.username else "—"
 

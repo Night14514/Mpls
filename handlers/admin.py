@@ -29,6 +29,9 @@ from keyboards import (
     back_kb,
     categories_kb,
     confirm_kb,
+    admin_subcategories_kb,
+    admin_subcategory_actions_kb,
+    admin_permissions_kb,
     secret_access_kb,
     skip_kb,
 )
@@ -49,6 +52,7 @@ from states import (
     AdminPromoStates,
     AdminUserStates,
     AdminVIPGrantStates,
+    AdminSubcategoryStates,
     AdminWalletStates,
     AdminReferralSettingsStates,
     AdminVIPSettingsStates,
@@ -1428,9 +1432,13 @@ async def cb_admin_vip_list(callback: CallbackQuery):
         lines = []
         for u in vip_users[:50]:
             username = f"@{u.username}" if u.username else "—"
+            plan = VIPService.get_plan(u.vip_plan or "")
+            plan_label = plan.label if plan else (u.vip_plan or "—")
             lines.append(
                 f"👤 {username} (ID: <code>{u.telegram_id}</code>)\n"
                 f"   Баланс: {format_price(u.balance)}\n"
+                f"   Тариф: {plan_label}\n"
+                f"   До: {VIPService._format_expiry(u.vip_expiry)}\n"
                 f"   Выдан: {u.vip_purchased_at or '—'}"
             )
         text = "👥 <b>VIP-пользователи</b>\n\n" + "\n\n".join(lines)
@@ -1463,7 +1471,9 @@ async def msg_admin_vip_grant_search(message: Message, state: FSMContext, db_use
 
     target = users[0]
     settings = await VIPService.get_settings()
-    await VIPService.grant_vip(target.id, 0, "admin_grant", str(db_user.telegram_id))
+    await VIPService.grant_vip(
+        target.id, 0, "admin_grant", str(db_user.telegram_id), plan_key="1m"
+    )
 
     from services.secret_access_service import SecretAccessService
     await SecretAccessService.log_admin_action(
@@ -1480,7 +1490,256 @@ async def msg_admin_vip_grant_search(message: Message, state: FSMContext, db_use
     await state.clear()
 
 
+# ── Подкатегории ─────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("admin:subcats:"))
+async def cb_admin_subcategories(callback: CallbackQuery, db_user: User):
+    category_id = int(callback.data.split(":")[2])
+    category = await ProductService.get_category(category_id)
+    if not category:
+        await callback.answer("Категория не найдена", show_alert=True)
+        return
+
+    from services.permission_service import PermissionService
+
+    has_hidden = await PermissionService.has_hidden_access(db_user.telegram_id)
+    subcategories = await ProductService.get_subcategories(
+        category_id, include_hidden=True, trusted=True
+    )
+    await safe_edit_or_send(
+        callback,
+        f"📁 <b>Подкатегории</b>\n\nКатегория: {escape(category.name)}",
+        reply_markup=admin_subcategories_kb(subcategories, category_id, has_hidden),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin:subcat_add:"))
+async def cb_admin_subcat_add(callback: CallbackQuery, state: FSMContext):
+    category_id = int(callback.data.split(":")[2])
+    await state.set_state(AdminSubcategoryStates.name)
+    await state.update_data(subcat_category_id=category_id)
+    await safe_edit_or_send(
+        callback,
+        "📁 Введите название подкатегории:",
+        reply_markup=back_kb(f"admin:subcats:{category_id}"),
+    )
+    await callback.answer()
+
+
+@router.message(AdminSubcategoryStates.name)
+async def msg_admin_subcat_name(message: Message, state: FSMContext):
+    data = await state.get_data()
+    category_id = data.get("subcat_category_id")
+    edit_id = data.get("subcat_edit_id")
+    name = message.text.strip()
+    if len(name) < 2:
+        await message.answer("❌ Введите название длиной от 2 символов")
+        return
+
+    if edit_id:
+        sub = await ProductService.update_subcategory(edit_id, name=name)
+    else:
+        sub = await ProductService.create_subcategory(category_id, name)
+    await state.clear()
+    if sub:
+        await message.answer(
+            f"✅ Подкатегория «{escape(sub.name)}» сохранена",
+            reply_markup=admin_subcategories_kb(
+                await ProductService.get_subcategories(
+                    sub.category_id, include_hidden=True, trusted=True
+                ),
+                sub.category_id,
+            ),
+            parse_mode="HTML",
+        )
+    else:
+        await message.answer("❌ Ошибка сохранения подкатегории")
+
+
+@router.callback_query(F.data.regexp(r"^admin:subcat:\d+$"))
+async def cb_admin_subcat_view(callback: CallbackQuery, db_user: User):
+    subcategory_id = int(callback.data.split(":")[2])
+    sub = await ProductService.get_subcategory(subcategory_id)
+    if not sub:
+        await callback.answer("Подкатегория не найдена", show_alert=True)
+        return
+
+    from services.permission_service import PermissionService
+
+    has_hidden = await PermissionService.has_hidden_access(db_user.telegram_id)
+    hidden = "🔒 скрытая" if sub.is_hidden else "✅ видимая"
+    text = (
+        f"📁 <b>{escape(sub.name)}</b>\n\n"
+        f"ID: {subcategory_id}\n"
+        f"Категория: {sub.category_id}\n"
+        f"Статус: {hidden}\n"
+        f"Порядок: {sub.sort_order}"
+    )
+    await safe_edit_or_send(
+        callback,
+        text,
+        reply_markup=admin_subcategory_actions_kb(
+            subcategory_id, sub.category_id, has_hidden
+        ),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin:subcat:"))
+async def cb_admin_subcat_action(callback: CallbackQuery, db_user: User, state: FSMContext):
+    parts = callback.data.split(":")
+    if len(parts) < 4:
+        return
+
+    action = parts[2]
+    subcategory_id = int(parts[3])
+    sub = await ProductService.get_subcategory(subcategory_id)
+    if not sub:
+        await callback.answer("Подкатегория не найдена", show_alert=True)
+        return
+
+    from services.permission_service import PermissionService
+
+    has_hidden = await PermissionService.has_hidden_access(db_user.telegram_id)
+    if action in ("up", "down") and not has_hidden:
+        await callback.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+
+    if action == "up":
+        ok = await ProductService.move_subcategory_up(subcategory_id)
+        await callback.answer("↑ Перемещено" if ok else "Уже в начале")
+    elif action == "down":
+        ok = await ProductService.move_subcategory_down(subcategory_id)
+        await callback.answer("↓ Перемещено" if ok else "Уже в конце")
+    elif action == "edit":
+        await state.set_state(AdminSubcategoryStates.name)
+        await state.update_data(
+            subcat_category_id=sub.category_id,
+            subcat_edit_id=subcategory_id,
+        )
+        await safe_edit_or_send(
+            callback,
+            "✏️ Введите новое название подкатегории:",
+            reply_markup=back_kb(f"admin:subcat:{subcategory_id}"),
+        )
+        await callback.answer()
+        return
+    elif action == "del":
+        await safe_edit_or_send(
+            callback,
+            f"🗑 Удалить подкатегорию «{escape(sub.name)}»?",
+            reply_markup=confirm_kb(
+                f"admin:subcat_del_yes:{subcategory_id}",
+                f"admin:subcats:{sub.category_id}",
+            ),
+        )
+        await callback.answer()
+        return
+    else:
+        return
+
+    sub = await ProductService.get_subcategory(subcategory_id)
+    hidden = "🔒 скрытая" if sub.is_hidden else "✅ видимая"
+    text = (
+        f"📁 <b>{escape(sub.name)}</b>\n\n"
+        f"ID: {subcategory_id}\n"
+        f"Статус: {hidden}\n"
+        f"Порядок: {sub.sort_order}"
+    )
+    await safe_edit_or_send(
+        callback,
+        text,
+        reply_markup=admin_subcategory_actions_kb(
+            subcategory_id, sub.category_id, has_hidden
+        ),
+    )
+
+
+@router.callback_query(F.data.startswith("admin:subcat_del_yes:"))
+async def cb_admin_subcat_del_yes(callback: CallbackQuery):
+    subcategory_id = int(callback.data.split(":")[2])
+    sub = await ProductService.get_subcategory(subcategory_id)
+    category_id = sub.category_id if sub else 0
+    await ProductService.delete_subcategory(subcategory_id)
+    subcategories = await ProductService.get_subcategories(
+        category_id, include_hidden=True, trusted=True
+    )
+    await safe_edit_or_send(
+        callback,
+        "✅ Подкатегория удалена",
+        reply_markup=admin_subcategories_kb(subcategories, category_id),
+    )
+    await callback.answer()
+
+
 # ── Секретный доступ ──────────────────────────────────────────
+
+@router.callback_query(F.data == "admin:secret:permissions")
+async def cb_admin_secret_permissions(callback: CallbackQuery, db_user: User):
+    """Управление полномочиями админов."""
+    from services.permission_service import PermissionService
+
+    if not await PermissionService.has_hidden_access(db_user.telegram_id):
+        await callback.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+
+    permissions = await PermissionService.get_permissions()
+    await safe_edit_or_send(
+        callback,
+        "🔑 <b>Управление полномочиями админов</b>\n\n"
+        "✅ — доступно обычным админам\n"
+        "❌ — скрыто (только секретный доступ)\n\n"
+        "Нажмите на кнопку, чтобы переключить:",
+        reply_markup=admin_permissions_kb(permissions),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin:perm_toggle:"))
+async def cb_admin_perm_toggle(callback: CallbackQuery, db_user: User):
+    from services.permission_service import PermissionService
+
+    if not await PermissionService.has_hidden_access(db_user.telegram_id):
+        await callback.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+
+    permission_key = callback.data.split(":", 2)[2]
+    new_value = await PermissionService.toggle_permission(permission_key)
+    permissions = await PermissionService.get_permissions()
+    label = PermissionService.permission_label(permission_key)
+    await callback.answer(
+        f"{'✅ Доступно' if new_value else '❌ Скрыто'}: {label}"
+    )
+    await safe_edit_or_send(
+        callback,
+        "🔑 <b>Управление полномочиями админов</b>\n\n"
+        "✅ — доступно обычным админам\n"
+        "❌ — скрыто (только секретный доступ)\n\n"
+        "Нажмите на кнопку, чтобы переключить:",
+        reply_markup=admin_permissions_kb(permissions),
+    )
+
+
+@router.callback_query(F.data.startswith("admin:perm_page:"))
+async def cb_admin_perm_page(callback: CallbackQuery, db_user: User):
+    from services.permission_service import PermissionService
+
+    if not await PermissionService.has_hidden_access(db_user.telegram_id):
+        await callback.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+
+    page = int(callback.data.split(":")[2])
+    permissions = await PermissionService.get_permissions()
+    await safe_edit_or_send(
+        callback,
+        "🔑 <b>Управление полномочиями админов</b>\n\n"
+        "✅ — доступно обычным админам\n"
+        "❌ — скрыто (только секретный доступ)",
+        reply_markup=admin_permissions_kb(permissions, page=page),
+    )
+    await callback.answer()
+
 
 @router.callback_query(F.data == "admin:secret")
 async def cb_admin_secret_menu(callback: CallbackQuery, db_user: User):
@@ -1659,73 +1918,3 @@ async def cb_admin_secret_log(callback: CallbackQuery, db_user: User):
         text = "📋 <b>Журнал действий администраторов</b>\n\n" + "\n\n".join(lines)
     await safe_edit_or_send(callback, text, reply_markup=secret_access_kb())
     await callback.answer()
-
-
-# ── Category Reordering ──────────────────────────────────────
-
-@router.callback_query(F.data.startswith("admin:cat:"))
-async def cb_admin_category_action(callback: CallbackQuery, db_user: User):
-    """Действия с категорией."""
-    parts = callback.data.split(":")
-    
-    # Handle admin:cat:ID (view category details)
-    if len(parts) == 3 and parts[2].isdigit():
-        category_id = int(parts[2])
-        category = await ProductService.get_category(category_id)
-        if not category:
-            await callback.answer("Категория не найдена", show_alert=True)
-            return
-        
-        from services.permission_service import PermissionService
-        has_hidden = PermissionService.has_hidden_access(db_user.telegram_id)
-        
-        hidden = "🔒 скрытая" if category.is_hidden else "✅ видимая"
-        text = f"📂 <b>{escape(category.name)}</b>\n\n" f"ID: {category_id}\n" f"Статус: {hidden}\nПорядок: {category.sort_order}"
-        await safe_edit_or_send(
-            callback, text, reply_markup=admin_category_actions_kb(category_id, has_hidden)
-        )
-        await callback.answer()
-        return
-    
-    # Handle admin:cat:action:ID
-    if len(parts) >= 4:
-        action = parts[2]
-        category_id = int(parts[3]) if parts[3].isdigit() else None
-        
-        if not category_id:
-            await callback.answer("Неверный формат", show_alert=True)
-            return
-        
-        from services.permission_service import PermissionService
-        has_hidden = PermissionService.has_hidden_access(db_user.telegram_id)
-        
-        # Check hidden access for reordering actions
-        if action in ["up", "down"] and not has_hidden:
-            await callback.answer("⛔ Доступ запрещён", show_alert=True)
-            return
-        
-        # Validate callback server-side
-        if not await PermissionService.validate_callback(callback.data, db_user.telegram_id):
-            await callback.answer("⛔ Доступ запрещён", show_alert=True)
-            return
-        
-        if action == "up":
-            success = await ProductService.move_category_up(category_id)
-            await callback.answer("↑ Категория перемещена вверх" if success else "Ошибка")
-        elif action == "down":
-            success = await ProductService.move_category_down(category_id)
-            await callback.answer("↓ Категория перемещена вниз" if success else "Ошибка")
-        elif action == "edit":
-            # TODO: Add edit functionality
-            await callback.answer("Редактирование скоро будет доступно")
-        elif action == "del":
-            # Show delete confirmation
-            await callback.message.edit_text(
-                f"🗑 Удалить категорию #{category_id}?",
-                reply_markup=confirm_kb(f"admin:cat_del_yes:{category_id}", "admin:categories"),
-                parse_mode="HTML",
-            )
-            await callback.answer()
-        return
-    
-    await callback.answer("Неверный формат", show_alert=True)

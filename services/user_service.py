@@ -38,6 +38,7 @@ class UserService:
             is_vip=bool(row["is_vip"]) if "is_vip" in keys else False,
             vip_purchased_at=row["vip_purchased_at"] if "vip_purchased_at" in keys else None,
             vip_expiry=row["vip_expiry"] if "vip_expiry" in keys else None,
+            vip_plan=row["vip_plan"] if "vip_plan" in keys else None,
         )
 
     @classmethod

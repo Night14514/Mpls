@@ -1,5 +1,5 @@
 """
-Маркет: категории, товары, покупка за баланс.
+Маркет: категории, подкатегории, товары, покупка за баланс.
 """
 
 import logging
@@ -16,6 +16,7 @@ from keyboards import (
     insufficient_balance_kb,
     product_card_kb,
     products_kb,
+    subcategories_kb,
 )
 from models import User
 from services.order_service import OrderService, STATUS_COMPLETED, STATUS_PAID
@@ -63,7 +64,7 @@ async def cb_market(callback: CallbackQuery, db_user: User, state: FSMContext):
 
 @router.callback_query(F.data.startswith("cat:"))
 async def cb_category(callback: CallbackQuery, db_user: User, state: FSMContext):
-    """Товары в категории."""
+    """Подкатегории или товары в категории."""
     if not await _check_registered(callback, db_user, state):
         return
 
@@ -77,7 +78,21 @@ async def cb_category(callback: CallbackQuery, db_user: User, state: FSMContext)
         await callback.answer("🔒 Доступ запрещён", show_alert=True)
         return
 
-    products = await ProductService.get_products_by_category(category_id, db_user.is_trusted)
+    subcategories = await ProductService.get_subcategories(
+        category_id, trusted=db_user.is_trusted
+    )
+    if subcategories:
+        await safe_edit_or_send(
+            callback,
+            f"📂 <b>{category.name}</b>\n\nВыберите подкатегорию:",
+            reply_markup=subcategories_kb(subcategories, category_id),
+        )
+        await callback.answer()
+        return
+
+    products = await ProductService.get_products_by_category(
+        category_id, db_user.is_trusted, subcategory_id=None
+    )
     if not products:
         await safe_edit_or_send(
             callback,
@@ -94,17 +109,131 @@ async def cb_category(callback: CallbackQuery, db_user: User, state: FSMContext)
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("cat_direct:"))
+async def cb_category_direct_products(callback: CallbackQuery, db_user: User):
+    """Все товары категории без фильтра подкатегории."""
+    category_id = int(callback.data.split(":")[1])
+    category = await ProductService.get_category(category_id)
+    if not category:
+        await callback.answer("Категория не найдена", show_alert=True)
+        return
+
+    products = await ProductService.get_all_products_in_category(
+        category_id, db_user.is_trusted
+    )
+    if not products:
+        await safe_edit_or_send(
+            callback,
+            f"📂 <b>{category.name}</b>\n\n"
+            "В этой категории пока нет товаров.",
+            reply_markup=back_to_menu_kb(),
+        )
+    else:
+        await safe_edit_or_send(
+            callback,
+            f"📂 <b>{category.name}</b>\n\nВсе товары:",
+            reply_markup=products_kb(
+                products,
+                category_id,
+                back_callback=f"cat:{category_id}",
+            ),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("subcat:"))
+async def cb_subcategory(callback: CallbackQuery, db_user: User):
+    """Товары в подкатегории."""
+    subcategory_id = int(callback.data.split(":")[1])
+    subcategory = await ProductService.get_subcategory(subcategory_id)
+    if not subcategory:
+        await callback.answer("Подкатегория не найдена", show_alert=True)
+        return
+
+    if subcategory.is_hidden and not db_user.is_trusted:
+        await callback.answer("🔒 Доступ запрещён", show_alert=True)
+        return
+
+    products = await ProductService.get_products_by_subcategory(
+        subcategory_id, db_user.is_trusted
+    )
+    category = await ProductService.get_category(subcategory.category_id)
+    title = category.name if category else "Категория"
+
+    if not products:
+        await safe_edit_or_send(
+            callback,
+            f"📂 <b>{title}</b> → <b>{subcategory.name}</b>\n\n"
+            "В этой подкатегории пока нет товаров.",
+            reply_markup=back_to_menu_kb(),
+        )
+    else:
+        await safe_edit_or_send(
+            callback,
+            f"📂 <b>{title}</b> → <b>{subcategory.name}</b>\n\nВыберите товар:",
+            reply_markup=products_kb(
+                products,
+                subcategory.category_id,
+                subcategory_id=subcategory_id,
+            ),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("subcat_back:"))
+async def cb_subcat_back(callback: CallbackQuery, db_user: User, state: FSMContext):
+    category_id = int(callback.data.split(":")[1])
+    category = await ProductService.get_category(category_id)
+    if not category:
+        await callback.answer("Категория не найдена", show_alert=True)
+        return
+    subcategories = await ProductService.get_subcategories(
+        category_id, trusted=db_user.is_trusted
+    )
+    await safe_edit_or_send(
+        callback,
+        f"📂 <b>{category.name}</b>\n\nВыберите подкатегорию:",
+        reply_markup=subcategories_kb(subcategories, category_id),
+    )
+    await callback.answer()
+
+
 @router.callback_query(F.data.startswith("products_page:"))
 async def cb_products_page(callback: CallbackQuery, db_user: User):
     parts = callback.data.split(":")
     category_id = int(parts[1])
     page = int(parts[2])
-    products = await ProductService.get_products_by_category(category_id, db_user.is_trusted)
+    products = await ProductService.get_products_by_category(
+        category_id, db_user.is_trusted, subcategory_id=None
+    )
     category = await ProductService.get_category(category_id)
     await safe_edit_or_send(
         callback,
         f"📂 <b>{category.name}</b>\n\nВыберите товар:",
         reply_markup=products_kb(products, category_id, page=page),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("subproducts_page:"))
+async def cb_subproducts_page(callback: CallbackQuery, db_user: User):
+    parts = callback.data.split(":")
+    subcategory_id = int(parts[1])
+    page = int(parts[2])
+    subcategory = await ProductService.get_subcategory(subcategory_id)
+    products = await ProductService.get_products_by_subcategory(
+        subcategory_id, db_user.is_trusted
+    )
+    category = await ProductService.get_category(subcategory.category_id)
+    await safe_edit_or_send(
+        callback,
+        f"📂 <b>{category.name}</b> → <b>{subcategory.name}</b>\n\nВыберите товар:",
+        reply_markup=products_kb(
+            products,
+            subcategory.category_id,
+            page=page,
+            subcategory_id=subcategory_id,
+        ),
     )
     await callback.answer()
 

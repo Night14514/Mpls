@@ -44,7 +44,7 @@ class UserMiddleware(BaseMiddleware):
 
 
 class AdminMiddleware(BaseMiddleware):
-    """Проверка прав администратора."""
+    """Проверка прав администратора и granular permissions."""
 
     async def __call__(
         self,
@@ -59,6 +59,16 @@ class AdminMiddleware(BaseMiddleware):
             elif isinstance(event, Message):
                 await event.answer("⛔ У вас нет прав администратора.")
             return None
+
+        if isinstance(event, CallbackQuery) and event.data:
+            from services.permission_service import PermissionService
+
+            if not await PermissionService.validate_callback(
+                event.data, db_user.telegram_id
+            ):
+                await event.answer("⛔ Доступ запрещён", show_alert=True)
+                return None
+
         return await handler(event, data)
 
 

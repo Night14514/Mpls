@@ -65,7 +65,7 @@ async def main() -> None:
         dp.include_router(catalog.router)
         dp.include_router(admin.router)
 
-        # APScheduler — проверка Crypto платежей каждые N секунд
+        # APScheduler — проверка Crypto платежей и очистка VIP
         scheduler = AsyncIOScheduler()
         if settings.CRYPTO_ENABLED and settings.CRYPTO_TOKEN:
             async def crypto_poll_job(bot: Bot) -> None:
@@ -82,8 +82,25 @@ async def main() -> None:
                 id="crypto_poll",
                 replace_existing=True,
             )
-            scheduler.start()
-            logger.info("Crypto опрос запущен (интервал %s сек)", settings.CRYPTO_POLL_INTERVAL)
+
+        async def vip_cleanup_job() -> None:
+            try:
+                from services.vip_service import VIPService
+                removed = await VIPService.cleanup_expired_vips()
+                if removed:
+                    logger.info("VIP cleanup: removed %s expired subscriptions", removed)
+            except Exception as e:
+                logger.error("vip_cleanup_job ошибка: %s", e)
+
+        scheduler.add_job(
+            vip_cleanup_job,
+            "interval",
+            hours=1,
+            id="vip_cleanup",
+            replace_existing=True,
+        )
+        scheduler.start()
+        logger.info("Фоновые задачи запущены (crypto poll, VIP cleanup)")
 
         logger.info("🚀 Запуск бота...")
         try:
