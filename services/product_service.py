@@ -502,11 +502,11 @@ class ProductService:
             row = await cursor.fetchone()
             return cls._row_to_product(row) if row else None
 
-   @classmethod
-async def update_product(cls, product_id: int, **kwargs) -> Optional[Product]:
-    allowed = {
-        "title", "description", "price", "photo", "category_id", "subcategory_id",
-        "is_hidden", "is_active", "content_data", "price_usd", "price_rub",
+    @classmethod
+    async def update_product(cls, product_id: int, **kwargs) -> Optional[Product]:
+        allowed = {
+            "title", "description", "price", "photo", "category_id", "subcategory_id",
+            "is_hidden", "is_active", "content_data", "price_usd", "price_rub",
     }
     # category_id/subcategory_id допускают явный сброс в NULL,
     # остальные поля при None просто игнорируются (не были переданы для изменения)
@@ -523,7 +523,7 @@ async def update_product(cls, product_id: int, **kwargs) -> Optional[Product]:
     async with get_db() as db:
         await db.execute(f"UPDATE products SET {set_clause} WHERE id = ?", values)
     return await cls.get_product(product_id)
-    
+
     @classmethod
     async def _log_product_dependencies(cls, db, product_id: int) -> None:
         for table, query in _PRODUCT_DEPENDENCY_QUERIES:
