@@ -37,7 +37,7 @@ cd mp
 
 # Создание виртуального окружения
 python3 -m venv venv
-source venv/bin/activate  # На Windows: venv\Scriptsctivate
+source venv/bin/activate  # На Windows: venv\Scripts\Activate
 
 # Установка зависимостей
 pip install -r requirements.txt
