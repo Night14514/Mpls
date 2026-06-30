@@ -30,6 +30,7 @@ from keyboards import (
     categories_kb,
     confirm_kb,
     admin_subcategories_kb,
+    admin_product_subcategories_kb,
     admin_subcategory_actions_kb,
     admin_permissions_kb,
     secret_access_kb,
@@ -81,6 +82,7 @@ def _draft_to_product_kwargs(draft: dict) -> dict:
         "description": draft.get("description", ""),
         "price": price,
         "category_id": draft.get("category_id"),
+        "subcategory_id": draft.get("subcategory_id"),
         "photo": draft.get("photo"),
         "content_data": content_data,
         "price_usd": None,
@@ -347,10 +349,70 @@ async def cb_admin_product_category(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Категория не найдена", show_alert=True)
         return
     _product_drafts[uid]["category_id"] = category_id
-    await state.set_state(AdminProductStates.description)
+    _product_drafts[uid]["subcategory_id"] = None
+
+    subcategories = await ProductService.get_subcategories(
+        category_id, include_hidden=True, trusted=True
+    )
+    if not subcategories:
+        # У категории нет подкатегорий — пропускаем шаг и идём дальше
+        await state.set_state(AdminProductStates.description)
+        await callback.message.edit_text(
+            f"📂 Категория: <b>{escape(category.name)}</b>\n\n"
+            "📝 Введите <b>описание</b> товара:",
+            parse_mode="HTML",
+        )
+        await callback.answer()
+        return
+
+    await state.set_state(AdminProductStates.subcategory)
     await callback.message.edit_text(
         f"📂 Категория: <b>{escape(category.name)}</b>\n\n"
+        "📁 Выберите <b>подкатегорию</b> товара (или укажите «Без подкатегории»):",
+        reply_markup=admin_product_subcategories_kb(subcategories, category_id),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(AdminProductStates.subcategory, F.data.regexp(r"^admin:product_subcat:\d+$"))
+async def cb_admin_product_subcategory(callback: CallbackQuery, state: FSMContext):
+    uid = callback.from_user.id
+    if uid not in _product_drafts:
+        await callback.answer("Данные потеряны, начните заново: /admin", show_alert=True)
+        return
+    subcategory_id = int(callback.data.split(":")[2])
+    if subcategory_id == 0:
+        _product_drafts[uid]["subcategory_id"] = None
+        sub_name = "без подкатегории"
+    else:
+        sub = await ProductService.get_subcategory(subcategory_id)
+        if not sub or sub.category_id != _product_drafts[uid].get("category_id"):
+            await callback.answer("Подкатегория не найдена", show_alert=True)
+            return
+        _product_drafts[uid]["subcategory_id"] = subcategory_id
+        sub_name = sub.name
+
+    await state.set_state(AdminProductStates.description)
+    await callback.message.edit_text(
+        f"📁 Подкатегория: <b>{escape(sub_name)}</b>\n\n"
         "📝 Введите <b>описание</b> товара:",
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:product_add_back_cat")
+async def cb_admin_product_add_back_cat(callback: CallbackQuery, state: FSMContext):
+    uid = callback.from_user.id
+    if uid not in _product_drafts:
+        await callback.answer("Данные потеряны, начните заново: /admin", show_alert=True)
+        return
+    categories = await ProductService.get_categories(include_hidden=True, trusted=True)
+    await state.set_state(AdminProductStates.category)
+    await callback.message.edit_text(
+        "📂 Выберите <b>категорию</b> товара:",
+        reply_markup=categories_kb(categories, prefix="admin:product_cat"),
         parse_mode="HTML",
     )
     await callback.answer()
@@ -1029,6 +1091,33 @@ async def cb_admin_edit_field(callback: CallbackQuery, state: FSMContext):
     parts = callback.data.split(":")
     product_id = int(parts[2])
     field = parts[3]
+
+    if field == "subcategory":
+        product = await ProductService.get_product(product_id)
+        if not product:
+            await callback.answer("Товар не найден", show_alert=True)
+            return
+        if not product.category_id:
+            await callback.answer(
+                "У товара не задана категория — сначала укажите категорию", show_alert=True
+            )
+            return
+        subcategories = await ProductService.get_subcategories(
+            product.category_id, include_hidden=True, trusted=True
+        )
+        if not subcategories:
+            await callback.answer("У категории этого товара нет подкатегорий", show_alert=True)
+            return
+        await callback.message.edit_text(
+            "📁 Выберите <b>подкатегорию</b> для товара:",
+            reply_markup=admin_product_subcategories_kb(
+                subcategories, product.category_id, prefix=f"admin:edit_subcat:{product_id}"
+            ),
+            parse_mode="HTML",
+        )
+        await callback.answer()
+        return
+
     await state.set_state(AdminProductEditStates.value)
     await state.update_data(product_id=product_id, field=field)
     prompts = {
@@ -1040,6 +1129,41 @@ async def cb_admin_edit_field(callback: CallbackQuery, state: FSMContext):
         "content": "📎 Новый контент для выдачи (текст, фото или файл):",
     }
     await callback.message.edit_text(prompts.get(field, "Введите значение:"))
+    await callback.answer()
+
+
+@router.callback_query(F.data.regexp(r"^admin:edit_subcat:\d+:\d+$"))
+async def cb_admin_edit_subcategory(callback: CallbackQuery):
+    parts = callback.data.split(":")
+    product_id = int(parts[2])
+    subcategory_id = int(parts[3])
+
+    product = await ProductService.get_product(product_id)
+    if not product:
+        await callback.answer("Товар не найден", show_alert=True)
+        return
+
+    if subcategory_id == 0:
+        await ProductService.update_product(product_id, subcategory_id=None)
+        await callback.message.edit_text(
+            "✅ Подкатегория снята (товар без подкатегории)",
+            reply_markup=admin_panel_kb(),
+            parse_mode="HTML",
+        )
+        await callback.answer()
+        return
+
+    sub = await ProductService.get_subcategory(subcategory_id)
+    if not sub or sub.category_id != product.category_id:
+        await callback.answer("Подкатегория не найдена или не принадлежит категории товара", show_alert=True)
+        return
+
+    await ProductService.update_product(product_id, subcategory_id=subcategory_id)
+    await callback.message.edit_text(
+        f"✅ Товар добавлен в подкатегорию «{escape(sub.name)}»",
+        reply_markup=admin_panel_kb(),
+        parse_mode="HTML",
+    )
     await callback.answer()
 
 
@@ -1109,8 +1233,12 @@ async def msg_edit_value_text(message: Message, state: FSMContext):
         if cat_id is not None and not await ProductService.get_category(cat_id):
             await message.answer("❌ Категория не найдена")
             return
-        await ProductService.update_product(product_id, category_id=cat_id)
-        await message.answer("✅ Категория обновлена", reply_markup=admin_panel_kb())
+        await ProductService.update_product(product_id, category_id=cat_id, subcategory_id=None)
+        await message.answer(
+            "✅ Категория обновлена\n"
+            "ℹ️ Подкатегория сброшена — задайте новую через поле «Подкатегория», если нужно.",
+            reply_markup=admin_panel_kb(),
+        )
         await state.clear()
     elif field == "content":
         encoded = encode_content_data("text", value)

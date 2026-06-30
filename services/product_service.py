@@ -502,22 +502,28 @@ class ProductService:
             row = await cursor.fetchone()
             return cls._row_to_product(row) if row else None
 
-    @classmethod
-    async def update_product(cls, product_id: int, **kwargs) -> Optional[Product]:
-        allowed = {
-            "title", "description", "price", "photo", "category_id", "subcategory_id",
-            "is_hidden", "is_active", "content_data", "price_usd", "price_rub",
-        }
-        fields = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
-        if not fields:
-            return await cls.get_product(product_id)
-
-        set_clause = ", ".join(f"{k} = ?" for k in fields)
-        values = list(fields.values()) + [product_id]
-        async with get_db() as db:
-            await db.execute(f"UPDATE products SET {set_clause} WHERE id = ?", values)
+   @classmethod
+async def update_product(cls, product_id: int, **kwargs) -> Optional[Product]:
+    allowed = {
+        "title", "description", "price", "photo", "category_id", "subcategory_id",
+        "is_hidden", "is_active", "content_data", "price_usd", "price_rub",
+    }
+    # category_id/subcategory_id допускают явный сброс в NULL,
+    # остальные поля при None просто игнорируются (не были переданы для изменения)
+    nullable = {"category_id", "subcategory_id"}
+    fields = {
+        k: v for k, v in kwargs.items()
+        if k in allowed and (v is not None or k in nullable)
+    }
+    if not fields:
         return await cls.get_product(product_id)
 
+    set_clause = ", ".join(f"{k} = ?" for k in fields)
+    values = list(fields.values()) + [product_id]
+    async with get_db() as db:
+        await db.execute(f"UPDATE products SET {set_clause} WHERE id = ?", values)
+    return await cls.get_product(product_id)
+    
     @classmethod
     async def _log_product_dependencies(cls, db, product_id: int) -> None:
         for table, query in _PRODUCT_DEPENDENCY_QUERIES:

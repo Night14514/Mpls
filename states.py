@@ -12,6 +12,7 @@ class AdminProductStates(StatesGroup):
     price_usd = State()
     price_rub = State()
     category = State()
+    subcategory = State()
     photo = State()
     content = State()
     confirm = State()

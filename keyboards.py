@@ -600,26 +600,49 @@ def admin_product_actions_kb(product_id: int) -> InlineKeyboardMarkup:
     return builder.as_markup() 
  
  
-def admin_product_edit_fields_kb(product_id: int) -> InlineKeyboardMarkup: 
-    builder = InlineKeyboardBuilder() 
-    fields = [ 
-        ("📝 Название", "title"), 
-        ("📄 Описание", "description"), 
-        ("💰 Цена", "price"), 
-        ("📂 Категория", "category"), 
-        ("🖼 Фото", "photo"), 
-        ("📎 Контент", "content"), 
+def admin_product_subcategories_kb(subcategories, category_id: int, prefix: str = "admin:product_subcat"):
+    """Выбор подкатегории при добавлении/редактировании товара (с возможностью пропустить)."""
+    builder = InlineKeyboardBuilder()
+    for sub in subcategories:
+        builder.row(
+            InlineKeyboardButton(
+                text=f"📁 {sub.name}",
+                callback_data=f"{prefix}:{sub.id}",
+            )
+        )
+    builder.row(
+        InlineKeyboardButton(
+            text="🚫 Без подкатегории",
+            callback_data=f"{prefix}:0",
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(text="⬅️ Назад", callback_data="admin:product_add_back_cat")
+    )
+    return builder.as_markup()
+
+
+def admin_product_edit_fields_kb(product_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    fields = [
+        ("📝 Название", "title"),
+        ("📄 Описание", "description"),
+        ("💰 Цена", "price"),
+        ("📂 Категория", "category"),
+        ("📁 Подкатегория", "subcategory"),   # ← новое поле
+        ("🖼 Фото", "photo"),
+        ("📎 Контент", "content"),
         ("🎥 Видео", "video"),
-    ] 
-    for label, field in fields: 
-        builder.row( 
-            InlineKeyboardButton( 
-                text=label, 
-                callback_data=f"admin:edit_field:{product_id}:{field}", 
-            ) 
-        ) 
-    builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:product:{product_id}")) 
-    return builder.as_markup() 
+    ]
+    for label, field in fields:
+        builder.row(
+            InlineKeyboardButton(
+                text=label,
+                callback_data=f"admin:edit_field:{product_id}:{field}",
+            )
+        )
+    builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:product:{product_id}"))
+    return builder.as_markup()
  
  
 def admin_category_actions_kb(category_id: int, has_hidden_access: bool = False) -> InlineKeyboardMarkup:
